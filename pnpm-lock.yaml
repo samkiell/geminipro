@@ -17,6 +17,9 @@ importers:
       grammy:
         specifier: ^1.46.0
         version: 1.46.0
+      groq-sdk:
+        specifier: ^1.6.0
+        version: 1.6.0
       pino:
         specifier: ^10.4.0
         version: 10.4.0
@@ -1170,6 +1173,10 @@ packages:
   grammy@1.46.0:
     resolution: {integrity: sha512-/8Qw+iisrUdOMk+p2mjEHouMm/BBdBEN1DHh16wiTpRUZkxDG3PxexdjCvR+wvK3LWPdrEvnQbdrwpU954sPhg==}
     engines: {node: ^12.20.0 || >=14.13.1}
+
+  groq-sdk@1.6.0:
+    resolution: {integrity: sha512-ggMgo6n84aZdNObgkSbSxWrdAq4wABsViIRb5e4N15bMUtDLZVhqlgZOI7X4TeqdBMdaVUOuUdZxAZIp06u0vw==}
+    hasBin: true
 
   hashery@1.5.1:
     resolution: {integrity: sha512-iZyKG96/JwPz1N55vj2Ie2vXbhu440zfUfJvSwEqEbeLluk7NnapfGqa7LH0mOsnDxTF85Mx8/dyR6HfqcbmbQ==}
@@ -2543,6 +2550,8 @@ snapshots:
     transitivePeerDependencies:
       - encoding
       - supports-color
+
+  groq-sdk@1.6.0: {}
 
   hashery@1.5.1:
     dependencies:
