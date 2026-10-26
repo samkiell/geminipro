@@ -38,6 +38,8 @@ export interface CreateOrderDeps {
   salesCutoff: Date | undefined;
   /** Where the buyer lands after paying, e.g. the bot's t.me link. */
   returnUrl: string | undefined;
+  /** Session length asked of Bachs, and the expiry used when its response has none. */
+  paymentWindowMinutes?: number;
   now?: () => Date;
 }
 
@@ -82,6 +84,7 @@ export async function createOrder(
   if (quantity > maxQuantity) return { ok: false, reason: 'unavailable', maxQuantity };
 
   const price = priceFor(quantity, deps.pricing);
+  const windowMinutes = deps.paymentWindowMinutes ?? PAYMENT_WINDOW_MINUTES;
   const id = randomUUID();
   try {
     await db.insert(orders).values({
@@ -93,7 +96,7 @@ export async function createOrder(
       amountNgn: price.totalNgn,
       status: 'created',
       paymentReference: paymentReference(id),
-      expiresAt: sql`now() + make_interval(mins => ${PAYMENT_WINDOW_MINUTES})`,
+      expiresAt: sql`now() + make_interval(mins => ${windowMinutes})`,
     });
   } catch (err) {
     // Another request for this user won the one-unpaid-order race.
@@ -110,12 +113,18 @@ export async function createOrder(
       amountNgn: price.totalNgn,
       quantity,
       telegramId,
-      expiresInMinutes: PAYMENT_WINDOW_MINUTES,
+      expiresInMinutes: windowMinutes,
       ...(deps.returnUrl && { returnUrl: deps.returnUrl }),
     });
     const [order] = await db
       .update(orders)
-      .set({ status: 'awaiting_payment', checkoutId: checkout.checkoutId, checkoutUrl: checkout.checkoutUrl })
+      .set({
+        status: 'awaiting_payment',
+        checkoutId: checkout.checkoutId,
+        checkoutUrl: checkout.checkoutUrl,
+        // The provider's expiry is the source of truth for the countdown (Prompt D section 4).
+        ...(checkout.expiresAt && !Number.isNaN(checkout.expiresAt.getTime()) && { expiresAt: checkout.expiresAt }),
+      })
       .where(and(eq(orders.id, id), eq(orders.status, 'created')))
       .returning();
     if (!order) return { ok: false, reason: 'checkout_failed' };

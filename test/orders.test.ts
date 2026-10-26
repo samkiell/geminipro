@@ -103,6 +103,25 @@ describe('createOrder', () => {
     ]);
   });
 
+  it("stores the provider's checkout expiry, never an assumed window", async () => {
+    const expiresAt = new Date(Date.now() + 9 * 60_000);
+    const result = await createOrder(
+      deps({
+        paymentWindowMinutes: 20,
+        payments: {
+          createCheckout: async (input: CreateCheckoutInput) => {
+            checkouts.push(input);
+            return { checkoutId: 'chk_x', checkoutUrl: 'https://sandbox-checkout.bachs.io/c/x', expiresAt };
+          },
+        },
+      }),
+      { telegramId: 7, quantity: 1 },
+    );
+    if (!result.ok) throw new Error(`expected ok, got ${result.reason}`);
+    expect(checkouts[0]?.expiresInMinutes).toBe(20);
+    expect(result.order.expiresAt?.getTime()).toBe(expiresAt.getTime());
+  });
+
   it('stores the grossed up total when the bot adds the fee', async () => {
     const result = await createOrder(
       deps({ pricing: { unitPriceNgn: 3500, grossUp: true, feePct: 0.02, feeFlat: 0 } }),

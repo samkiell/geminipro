@@ -76,6 +76,8 @@ export interface FlowDeps {
   gateChannel?: string;
   gateChannelUrl?: string;
   adminUserIds?: readonly number[];
+  /** Bachs session length (BACHS_SESSION_TTL_MINUTES). Default 15. */
+  paymentWindowMinutes?: number;
   /** Referral program; without it /invite is not offered. */
   referral?: ReferralConfig;
   /** Minimum gap between two edits of one status message. Default 1.2s. */
@@ -102,6 +104,7 @@ export function createFlows(deps: FlowDeps) {
     maxQtyPerOrder: facts.maxQtyPerOrder,
     salesCutoff: deps.salesCutoff,
     returnUrl: deps.returnUrl,
+    ...(deps.paymentWindowMinutes && { paymentWindowMinutes: deps.paymentWindowMinutes }),
   });
 
   // ------------------------------------------------------------ status sync (throttled, coalesced)
@@ -740,6 +743,6 @@ export function createFlows(deps: FlowDeps) {
     orderChanged,
     whenIdle,
     availableFor,
-    paymentWindowMinutes: PAYMENT_WINDOW_MINUTES,
+    paymentWindowMinutes: deps.paymentWindowMinutes ?? PAYMENT_WINDOW_MINUTES,
   };
 }

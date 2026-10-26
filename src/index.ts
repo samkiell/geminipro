@@ -20,7 +20,7 @@ import { BachsClient, BachsProvider } from './services/bachs.js';
 import { createFulfilment } from './services/fulfilment.js';
 import { saveLead } from './services/leads.js';
 import { createNotifier, type Notify } from './services/notifier.js';
-import { PAYMENT_WINDOW_MINUTES, reservedUnits } from './services/orders.js';
+import { reservedUnits } from './services/orders.js';
 import { pricingFromConfig } from './services/pricing.js';
 import { createProof, seedProof } from './services/proof.js';
 import { createCountdownRunner } from './services/countdown.js';
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
     supportIntl: config.SUPPORT_WHATSAPP_INTL,
     supportLocal: localPhone(config.SUPPORT_WHATSAPP_INTL),
     maxQtyPerOrder: config.MAX_QTY_PER_ORDER,
-    paymentWindowMinutes: PAYMENT_WINDOW_MINUTES,
+    paymentWindowMinutes: config.BACHS_SESSION_TTL_MINUTES,
   };
   const payments = new BachsProvider(
     new BachsClient({ secretKey: config.BACHS_SECRET_KEY, ...(config.BACHS_BASE_URL && { baseUrl: config.BACHS_BASE_URL }), logger }),
@@ -119,6 +119,7 @@ async function main(): Promise<void> {
     gateChannel: config.GATE_CHANNEL,
     gateChannelUrl: config.GATE_CHANNEL_URL,
     adminUserIds: config.ADMIN_TELEGRAM_IDS,
+    paymentWindowMinutes: config.BACHS_SESSION_TTL_MINUTES,
     referral,
   });
   const fulfilment = createFulfilment({
