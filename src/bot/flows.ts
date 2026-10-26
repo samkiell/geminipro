@@ -262,10 +262,11 @@ export function createFlows(deps: FlowDeps) {
     return okOutcome(result.order, await presentOrder(result.order));
   }
 
-  /** Shows an unpaid order's card again at the bottom of the chat, retiring the old copy. */
+  /** Shows an unpaid order's card again at the bottom of the chat, deleting the old copy. */
   async function moveCard(order: Order): Promise<number> {
     if (order.summaryMessageId) {
-      await port.edit(order.telegramId, order.summaryMessageId, { text: `order summary · ${order.orderNo} (moved below)` });
+      // Best effort: delete the old card so no stub remains.
+      await port.delete(order.telegramId, order.summaryMessageId).catch(() => {});
     }
     const [maxQuantity, offerText] = await Promise.all([availableFor(order), getOfferText(db)]);
     const cardId = await port.send(order.telegramId, summaryCard({ order, maxQuantity, offerText, facts }));
@@ -475,7 +476,8 @@ export function createFlows(deps: FlowDeps) {
   }
 
   async function showStart(telegramId: number, firstName: string | undefined): Promise<void> {
-    await port.send(telegramId, startMessage(firstName, facts, await getOfferText(db)));
+    const existing = await db.select({ id: orders.id }).from(orders).where(eq(orders.telegramId, telegramId)).limit(1);
+    await port.send(telegramId, startMessage(firstName, facts, await getOfferText(db), existing.length > 0));
   }
 
   /** The reminder's buttons: "yes" closes every link of the order, "i need help" brings in support. */

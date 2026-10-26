@@ -158,15 +158,16 @@ function tap(data: string, messageId: number, user = BUYER): Update {
 describe('commands', () => {
   it('/start greets with buttons and saves the user', async () => {
     await makeBot().handleUpdate(message('/start'));
-    expect(tg.sent[0]?.text).toContain('hi sam!');
-    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['buy a link', 'my orders', 'how it works', 'help']);
+    expect(tg.sent[0]?.text).toContain('hey 👋 get google ai pro for 18 months, delivered right here after payment.');
+    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['buy a link', 'see proof', 'how it works']);
     const [user] = await testDb.db.select().from(users).where(eq(users.telegramId, BUYER));
     expect(user).toMatchObject({ username: 'samkieldev', firstName: 'Sam', blocked: false });
   });
 
   it('/buy 3 shows the summary card for 3 and the status message', async () => {
     await makeBot().handleUpdate(message('/buy 3'));
-    expect(tg.sent[0]?.text).toContain('quantity: 3 links');
+    expect(tg.sent[0]?.text).toContain('how many links?');
+    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['−', '3', '+', 'pay · ₦10,500 + fee', 'cancel']);
     expect(tg.sent[1]?.text).toContain('⏳ waiting for payment');
   });
 
@@ -237,12 +238,14 @@ describe('chat: one model call at most, often none', () => {
       decides(decision);
       const before = tg.sent.length;
       await bot.handleUpdate(message(text, { user: BUYER }));
-      return tg.sent.slice(before);
+      const produced = tg.sent.slice(before);
+      expect(produced.length).toBeLessThanOrEqual(2);
+      return produced;
     };
 
     // buy: clamped to the most per order
     const buy = await say({ intent: 'buy', quantity: 50, reply: '' });
-    expect(buy.find((m) => m.text.startsWith('order summary'))?.text).toContain('quantity: 10 links');
+    expect(buy.find((m) => m.text.startsWith('how many links?'))?.text).toContain('how many links?');
     // history
     const history = (await say({ intent: 'history', reply: '' })).at(-1)?.keyboard?.flat() ?? [];
     expect(history.some((b) => /^GP-\d+ · 1 link · .* · delivered ✅$/.test(b.text))).toBe(true);
@@ -284,7 +287,8 @@ describe('chat: one model call at most, often none', () => {
     const bot = makeBot();
     groq.respond(() => ({ content: 'not json at all' }));
     await bot.handleUpdate(message('can i get two of them please'));
-    expect(tg.sent[0]?.text).toContain('quantity: 2 links');
+    expect(tg.sent[0]?.text).toContain('how many links?');
+    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['−', '2', '+', 'pay · ₦7,000 + fee', 'cancel']);
     groq.respond(() => ({ status: 429, headers: { 'retry-after': '60' } }));
     await bot.handleUpdate(message('blah blah something random'));
     expect(tg.buttons(tg.sent.at(-1)?.id).map((b) => b.text)).toEqual(['buy a link', 'price', 'see proof', 'support']);
@@ -334,7 +338,8 @@ describe('button taps', () => {
     const cardId = tg.sent[0]?.id ?? 0;
     const plus = tg.buttons(cardId).find((b) => b.text === '+');
     await bot.handleUpdate(tap(plus && 'data' in plus ? plus.data : '', cardId));
-    expect(tg.get(cardId)?.text).toContain('quantity: 2 links');
+    expect(tg.get(cardId)?.text).toContain('how many links?');
+    expect(tg.buttons(cardId).map((b) => b.text)).toEqual(['−', '2', '+', 'pay · ₦7,000 + fee', 'cancel']);
     expect(tg.sent).toHaveLength(2);
 
     // the same + again belongs to the replaced order now
@@ -349,7 +354,7 @@ describe('button taps', () => {
     const cancel = tg.buttons(cardId).find((b) => b.text === 'cancel');
     await bot.handleUpdate(tap(cancel && 'data' in cancel ? cancel.data : '', cardId));
     await flows.whenIdle();
-    expect(tg.get(cardId)?.text).toMatch(/^cancelled · order GP-\d+$/);
+    expect(tg.get(cardId)?.text).toBe('cancelled');
     expect(tg.get(cardId)?.keyboard).toBeUndefined();
     expect(tg.answers.at(-1)?.text).toBe('cancelled');
   });

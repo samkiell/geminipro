@@ -82,8 +82,8 @@ describe('buying', () => {
     expect(order?.summaryMessageId).toBe(tg.sent[0]?.id);
     expect(order?.payMessageId).toBe(tg.sent[0]?.id);
     expect(order?.statusMessageId).toBe(tg.sent[1]?.id);
-    expect(tg.sent[0]?.text).toContain(`order summary · ${order?.orderNo}`);
-    expect(tg.buttons(order?.summaryMessageId).map((b) => b.text)).toEqual(['−', '2', '+', 'pay ₦7,000 + fee', 'see proof', 'cancel']);
+    expect(tg.sent[0]?.text).toContain('how many links?');
+    expect(tg.buttons(order?.summaryMessageId).map((b) => b.text)).toEqual(['−', '2', '+', 'pay · ₦7,000 + fee', 'cancel']);
     expect(tg.sent[1]?.text).toContain('⏳ waiting for payment');
     expect(checkouts).toHaveLength(1);
   });
@@ -102,8 +102,8 @@ describe('buying', () => {
     expect((await getOrder(testDb.db, first?.id ?? '')).status).toBe('cancelled');
     expect(second).toMatchObject({ summaryMessageId: cardId, statusMessageId: first?.statusMessageId, quantity: 3 });
     expect(tg.sent).toHaveLength(2); // nothing new: both messages were edited in place
-    expect(tg.get(cardId)?.text).toContain(`order summary · ${second?.orderNo}`);
-    expect(tg.get(cardId)?.text).toContain('quantity: 3 links');
+    expect(tg.get(cardId)?.text).toContain('how many links?');
+    expect(tg.buttons(cardId).map((b) => b.text)).toEqual(['−', '3', '+', 'pay · ₦10,500 + fee', 'cancel']);
     expect(tg.get(first?.statusMessageId)?.text).toContain(`order ${second?.orderNo}`);
 
     // the old order's buttons are stale now
@@ -127,7 +127,7 @@ describe('buying', () => {
     const order = await latestOrder();
     expect(await f.cancelFromCard(BUYER, order?.id ?? '')).toBe(true);
     await f.whenIdle();
-    expect(tg.get(order?.summaryMessageId)).toMatchObject({ text: `cancelled · order ${order?.orderNo}` });
+    expect(tg.get(order?.summaryMessageId)).toMatchObject({ text: 'cancelled' });
     expect(tg.get(order?.summaryMessageId)?.keyboard).toBeUndefined();
     expect(tg.get(order?.statusMessageId)?.text).toContain('cancelled.');
     expect(await f.cancelFromCard(BUYER, order?.id ?? '')).toBe(false);
@@ -149,7 +149,7 @@ describe('buying', () => {
     await testDb.db.update(orders).set({ expiresAt: new Date(0) }).where(eq(orders.id, unpaid?.id ?? ''));
     for (const o of await expireUnpaidOrders(testDb.db)) f.orderChanged(o.id);
     await f.whenIdle();
-    expect(tg.get(unpaid?.summaryMessageId)?.text).toBe(`expired ⌛ order ${unpaid?.orderNo}. send /buy to start again.`);
+    expect(tg.get(unpaid?.summaryMessageId)?.text).toBe('expired ⌛ send /buy to start again');
     expect(tg.get(unpaid?.summaryMessageId)?.keyboard).toBeUndefined();
   });
 
@@ -160,9 +160,10 @@ describe('buying', () => {
     await f.startBuy(BUYER, 2);
     const again = await latestOrder();
     expect(again?.id).toBe(first?.id);
-    expect(tg.get(first?.summaryMessageId)?.keyboard).toBeUndefined();
+    expect(tg.get(first?.summaryMessageId)).toBeUndefined();
+    expect(tg.deleted).toContain(first?.summaryMessageId);
     expect(again?.summaryMessageId).not.toBe(first?.summaryMessageId);
-    expect(tg.buttons(again?.summaryMessageId).map((b) => b.text)).toContain('pay ₦7,000 + fee');
+    expect(tg.buttons(again?.summaryMessageId).map((b) => b.text)).toContain('pay · ₦7,000 + fee');
     expect(checkouts).toHaveLength(1);
   });
 
@@ -326,8 +327,8 @@ describe('acceptance: buy 3, pay, receive tap-to-copy links, find them in histor
       '✅ link 1 activated',
       '✅ link 2 activated',
       '✅ link 3 activated',
-      'need help on whatsapp',
-      'my orders',
+      'need help',
+      'invite & earn 🎁',
     ]);
 
     // the card lost its buttons, the status message became the receipt
@@ -357,7 +358,7 @@ describe('acceptance: buy 3, pay, receive tap-to-copy links, find them in histor
       expect(tg.get(id)?.text).toContain('link 1 of 3: activated ✅');
       expect(tg.get(id)?.text).not.toContain(first?.activationLink ?? 'none');
     }
-    expect(tg.buttons(deliveryId).map((b) => b.text)).toEqual(['✅ link 2 activated', '✅ link 3 activated', 'need help on whatsapp', 'my orders']);
+    expect(tg.buttons(deliveryId).map((b) => b.text)).toEqual(['✅ link 2 activated', '✅ link 3 activated', 'need help', 'invite & earn 🎁']);
     expect(alerts).toEqual([]);
   });
 });
@@ -387,13 +388,13 @@ describe('activation', () => {
     // "not yet" puts the buttons back and closes nothing
     await f.activationTap(BUYER, msg, items[0]?.id ?? '', 'ask');
     await f.activationTap(BUYER, msg, items[0]?.id ?? '', 'no');
-    expect(tg.buttons(msg).map((b) => b.text)).toEqual(['✅ link 1 activated', '✅ link 2 activated', 'need help on whatsapp', 'my orders']);
+    expect(tg.buttons(msg).map((b) => b.text)).toEqual(['\u2705 link 1 activated', '\u2705 link 2 activated', 'need help', 'invite & earn \ud83c\udf81']);
     expect((await getItems(testDb.db, id)).every((i) => i.activatedAt === null)).toBe(true);
 
     for (const item of items) await f.activationTap(BUYER, msg, item.id, 'yes');
     expect(tg.get(msg)?.text).toContain('these links are activated ✅');
     expect(tg.get(msg)?.text).not.toContain('https://');
-    expect(tg.buttons(msg).map((b) => b.text)).toEqual(['need help on whatsapp', 'my orders']);
+    expect(tg.buttons(msg).map((b) => b.text)).toEqual(['need help', 'invite & earn \ud83c\udf81']);
     expect((await getOrder(testDb.db, id)).activatedConfirmedAt).toBeInstanceOf(Date);
 
     // closed for good: not in "show my links", not on the order card

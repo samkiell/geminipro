@@ -45,9 +45,6 @@ export function createResponder(deps: ResponderDeps) {
   const { flows, facts } = deps;
   const clamp = (q: number | null) => Math.min(Math.max(Math.trunc(q ?? 1) || 1, 1), facts.maxQtyPerOrder);
 
-  async function sayFirst(turn: Turn, reply: string): Promise<void> {
-    if (reply) await deps.reply(turn.telegramId, reply);
-  }
 
   async function owner(turn: Turn, topic: OwnerTopic): Promise<string> {
     const buttons = ownerButtons(topic).map((name) => ({ text: name, url: OWNER_LINKS[name] }));
@@ -61,22 +58,22 @@ export function createResponder(deps: ResponderDeps) {
     const id = turn.telegramId;
     switch (effectiveIntent(d, turn.userText)) {
       case 'buy': {
-        await sayFirst(turn, d.reply);
+        // UI intent: show only the card. Drop the model's reply (one response per action §1).
         const quantity = clamp(d.quantity);
         await flows.startBuy(id, quantity);
-        return d.reply || `[showed the order card for ${quantity}]`;
+        return `[showed the order card for ${quantity}]`;
       }
       case 'price': {
-        await sayFirst(turn, d.reply);
+        // UI intent: show only the price card.
         const quantity = clamp(d.quantity);
         const view = priceView(quantity, priceFor(quantity, deps.pricing).totalNgn, facts);
         await deps.reply(id, view.text, view.keyboard);
         return view.text;
       }
       case 'history':
-        await sayFirst(turn, d.reply);
+        // UI intent: show only the history.
         await flows.showHistory(id, 1);
-        return d.reply || '[showed their order history]';
+        return '[showed their order history]';
       case 'show_order': {
         const orderNo = /(\d{3,7})/.exec(d.orderNo ?? turn.userText)?.[1];
         if (!orderNo) {
@@ -94,11 +91,11 @@ export function createResponder(deps: ResponderDeps) {
         await deps.proof.send(id);
         return '[sent the proof screenshots]';
       case 'help':
-        await sayFirst(turn, d.reply);
+        // UI intent: show only the help hub.
         await flows.showHelp(id, 'hub');
-        return d.reply || '[showed the help menu]';
+        return '[showed the help menu]';
       case 'support': {
-        const text = d.reply || SUPPORT_REPLY(facts.supportLocal);
+        const text = SUPPORT_REPLY(facts.supportLocal);
         await deps.reply(id, text, [[supportButton(facts)]]);
         deps.notify({
           level: 'warning',

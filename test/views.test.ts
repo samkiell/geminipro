@@ -58,34 +58,28 @@ describe('summary card', () => {
     const card = summaryCard({ order, maxQuantity: 5, offerText: DEFAULT_OFFER_TEXT, facts });
     expect(card.text).toBe(
       [
-        'order summary · GP-1042',
-        'quantity: 2 links',
-        'price per link: ₦3,500',
-        'payment fee: added at checkout (card 2%, bank transfer 1.5%)',
-        'total: ₦7,000 + fee',
-        'you can buy up to 5 right now.',
-        '⚠️ no refund if the link expires before you activate it.',
-        '🔥 offer ending very soon',
+        'how many links?',
+        '\u20a63,500 each + fee',
+        '\u26a0\ufe0f no refund if a link expires before you activate it',
+        '\ud83d\udd25 offer ending very soon',
       ].join('\n'),
     );
     expect(card.keyboard).toEqual([
       [
-        { text: '−', data: `q:${order.id}:1` },
+        { text: '\u2212', data: `q:${order.id}:1` },
         { text: '2', data: 'n' },
         { text: '+', data: `q:${order.id}:3` },
       ],
-      [{ text: 'pay ₦7,000 + fee', url: order.checkoutUrl }],
-      [
-        { text: 'see proof', data: 'pf' },
-        { text: 'cancel', data: `x:${order.id}` },
-      ],
+      // Order has checkoutUrl so it shows the direct pay button.
+      [{ text: 'pay \u00b7 \u20a67,000 + fee', url: order.checkoutUrl }],
+      [{ text: 'cancel', data: `x:${order.id}` }],
     ]);
     for (const row of card.keyboard ?? []) for (const b of row) if ('data' in b) expect(b.data.length).toBeLessThanOrEqual(64);
   });
 
   it('the stepper stops at 1 and at what is available', () => {
     const one = summaryCard({ order: { ...order, quantity: 1 }, maxQuantity: 5, offerText: 'x', facts });
-    expect(one.keyboard?.[0]?.[0]).toEqual({ text: '−', data: 'n' });
+    expect(one.keyboard?.[0]?.[0]).toEqual({ text: '\u2212', data: 'n' });
     const top = summaryCard({ order: { ...order, quantity: 5 }, maxQuantity: 5, offerText: 'x', facts });
     expect(top.keyboard?.[0]?.[2]).toEqual({ text: '+', data: 'n' });
   });
@@ -97,15 +91,17 @@ describe('summary card', () => {
       offerText: 'x',
       facts: { ...facts, grossUp: true },
     });
-    expect(card.text).toContain('payment fee: ₦72');
-    expect(card.text).toContain('total: ₦3,572');
-    expect(card.keyboard?.[1]?.[0]?.text).toBe('pay ₦3,572');
+    // §1: simplified copy deck, no fee breakdown line in draft card.
+    expect(card.text).toContain('how many links?');
+    expect(card.text).toContain('\u20a63,500 each + fee');
+    // Direct pay button since order has checkoutUrl.
+    expect(card.keyboard?.[1]?.[0]?.text).toBe('pay \u00b7 \u20a63,572');
   });
 
   it('collapses to one line with no buttons once its job is done', () => {
-    expect(summaryResolved(order, 'paid')).toEqual({ text: 'paid ✅ order GP-1042' });
-    expect(summaryResolved(order, 'expired').text).toBe('expired ⌛ order GP-1042. send /buy to start again.');
-    expect(summaryResolved(order, 'cancelled').text).toBe('cancelled · order GP-1042');
+    expect(summaryResolved(order, 'paid')).toEqual({ text: 'paid \u2705 order GP-1042' });
+    expect(summaryResolved(order, 'expired').text).toBe('expired \u231b send /buy to start again');
+    expect(summaryResolved(order, 'cancelled').text).toBe('cancelled');
     expect(summaryResolved(order, 'held').keyboard).toBeUndefined();
   });
 });
@@ -172,8 +168,8 @@ describe('links messages', () => {
     );
     expect(message?.keyboard).toEqual([
       [
-        { text: 'need help on whatsapp', url: supportUrl('2348087357158', 'GP-1042') },
-        { text: 'my orders', data: 'h:1' },
+        { text: 'need help', url: supportUrl('2348087357158', 'GP-1042') },
+        { text: 'invite & earn \ud83c\udf81', data: 'inv' },
       ],
     ]);
   });
@@ -217,12 +213,12 @@ describe('links messages', () => {
     expect(message?.text).toContain("once a link is activated, tap its ✅ below and i'll close it here.");
     expect(message?.keyboard).toEqual([
       [
-        { text: '✅ link 2 activated', data: 'v:item-2' },
-        { text: '✅ link 3 activated', data: 'v:item-3' },
+        { text: '\u2705 link 2 activated', data: 'v:item-2' },
+        { text: '\u2705 link 3 activated', data: 'v:item-3' },
       ],
       [
-        { text: 'need help on whatsapp', url: supportUrl('2348087357158', 'GP-1042') },
-        { text: 'my orders', data: 'h:1' },
+        { text: 'need help', url: supportUrl('2348087357158', 'GP-1042') },
+        { text: 'invite & earn \ud83c\udf81', data: 'inv' },
       ],
     ]);
     expect(message?.itemIds).toEqual(['item-1', 'item-2', 'item-3']);
@@ -242,7 +238,7 @@ describe('links messages', () => {
       facts,
     });
     expect(closed[0]?.text).toBe('order GP-7\nthis link is activated ✅\nactivated ✅ 26 oct, closed.\nenjoy google ai pro!');
-    expect(closed[0]?.keyboard?.flat().map((b) => b.text)).toEqual(['need help on whatsapp', 'my orders']);
+    expect(closed[0]?.keyboard?.flat().map((b) => b.text)).toEqual(['need help', 'invite & earn \ud83c\udf81']);
     expect(activationConfirm('i', undefined)).toEqual([
       [{ text: 'yes, it is activated. close it', data: 'v:y:i' }],
       [{ text: 'not yet', data: 'v:n:i' }],

@@ -41,7 +41,7 @@ Two separate flows. The bot never moves money between them.
 1. **NGN in:** buyer pays via Bachs (NGN card or bank transfer). Funds sit in the owner's Bachs balance (NGN is available immediately) and are withdrawn to his bank manually.
 2. **USD out:** the reseller account is prepaid in USD, topped up by the owner in crypto. Each order deducts from that balance (about $1.20 per link as of 26 Oct).
 
-**Pricing:** ₦3,500 per link. Payment fees are paid by the buyer, so the owner receives the full ₦3,500 per link. The bot tells buyers the price is "₦3,500 plus a small payment fee". Implementation: set the Bachs account's `fee_preference` to `customer_pays`, so Bachs adds the exact fee at checkout (NGN card 2%, NGN bank transfer 1.5%). If the account stays on `org_pays`, the bot adds the fee itself (gross-up, about ₦3,572 for one link at 2%) and shows the buyer the total before payment. Bulk orders: ₦3,500 times quantity, fee on the total.
+**Pricing:** ₦3,500 per link. Payment fees are paid by the buyer, so the owner receives the full ₦3,500 per link. The bot tells buyers the price is "₦3,500 per link + fee". Implementation: set the Bachs account's `fee_preference` to `customer_pays`, so Bachs adds the exact fee at checkout. If the account stays on `org_pays`, the bot adds the fee itself (gross-up, about ₦3,572 for one link) and shows the buyer the total before payment. Bulk orders: ₦3,500 times quantity, fee on the total.
 
 ## 6. Users
 

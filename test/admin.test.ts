@@ -144,7 +144,7 @@ describe('admin commands', () => {
     expect(lastTextTo(BUYER)).toBe('sales are paused for a moment. please check back shortly.');
     await bot.handleUpdate(command('/resume', ADMIN));
     await bot.handleUpdate(command('/buy', BUYER));
-    expect(tg.textsTo(BUYER).some((t) => t.startsWith('order summary'))).toBe(true);
+    expect(tg.textsTo(BUYER).some((t) => t.startsWith('how many links?'))).toBe(true);
   });
 
   it('/offertext shows and sets the offer line', async () => {

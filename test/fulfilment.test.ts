@@ -93,7 +93,7 @@ describe('fulfil', () => {
         "once it's activated, tap ✅ below and i'll close it here.",
       ].join('\n'),
     );
-    expect(tg.buttons(message?.id).map((b) => b.text)).toEqual(["✅ i've activated it", 'need help on whatsapp', 'my orders']);
+    expect(tg.buttons(message?.id).map((b) => b.text)).toEqual(["\u2705 i've activated it", 'need help', 'invite & earn \ud83c\udf81']);
     expect(mock.state.orders).toHaveLength(1);
     // claimed, then delivered: the status message is refreshed both times
     expect(changed).toEqual([id, id]);
@@ -191,8 +191,8 @@ describe('fulfil', () => {
       const taps = tg.buttons(m.id).filter((b) => b.text.startsWith('✅')).map((b) => b.text.replace(/^✅ | activated$/g, ''));
       expect(taps).toEqual(shown);
     }
-    expect(tg.sent.slice(0, -1).every((m) => !tg.buttons(m.id).some((b) => b.text === 'my orders'))).toBe(true);
-    expect(tg.buttons(tg.sent.at(-1)?.id).map((b) => b.text)).toContain('my orders');
+    expect(tg.sent.slice(0, -1).every((m) => !tg.buttons(m.id).some((b) => b.text === 'invite & earn \ud83c\udf81'))).toBe(true);
+    expect(tg.buttons(tg.sent.at(-1)?.id).map((b) => b.text)).toContain('invite & earn \ud83c\udf81');
     const items = await getItems(testDb.db, id);
     expect(items.every((i) => i.deliveredAt)).toBe(true);
     // ...and each link remembers the one message that shows it

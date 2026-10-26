@@ -33,6 +33,8 @@ export const cb = {
   noop: 'n',
   buy: (quantity: number) => `b:${quantity}`,
   qty: (orderId: string, quantity: number) => `q:${orderId}:${quantity}`,
+  // Buyer taps [continue] on the draft card to create the real order and checkout.
+  continuePay: (orderId: string) => `cp:${orderId}`,
   cancel: (orderId: string) => `x:${orderId}`,
   history: (page: number) => `h:${page}`,
   order: (orderId: string, page: number) => `o:${orderId}:${page}`,
@@ -42,10 +44,13 @@ export const cb = {
   activationHelp: (orderId: string) => `a:h:${orderId}`,
   price: (quantity: number) => `pr:${quantity}`,
   proof: 'pf',
+  invite: 'inv',
   // One link: "i've activated it", then "yes" or "not yet".
   activate: (itemId: string) => `v:${itemId}`,
   activateYes: (itemId: string) => `v:y:${itemId}`,
   activateNo: (itemId: string) => `v:n:${itemId}`,
+  // Channel gate: after joining, buyer taps to recheck.
+  gateJoined: (orderId: string) => `gj:${orderId}`,
 };
 
 export function supportUrl(intl: string, orderNo?: string): string {
@@ -57,8 +62,8 @@ export function supportButton(facts: UiFacts, orderNo?: string, label = 'need he
   return { text: label, url: supportUrl(facts.supportIntl, orderNo) };
 }
 
-export function feeLine(facts: UiFacts): string {
-  return facts.grossUp ? 'payment fee included in the total' : 'plus a small payment fee at checkout (card 2%, bank transfer 1.5%)';
+export function feeLine(_facts: UiFacts): string {
+  return 'plus a small payment fee at checkout';
 }
 
 export function helpContext(facts: UiFacts, offerText: string): HelpContext {
@@ -74,21 +79,27 @@ export function helpContext(facts: UiFacts, offerText: string): HelpContext {
 
 // ---------------------------------------------------------------- start
 
-export function startMessage(firstName: string | undefined, facts: UiFacts, offerText: string): OutMessage {
-  const hi = firstName ? `hi ${firstName.toLowerCase()}!` : 'hi!';
+export function startMessage(
+  firstName: string | undefined,
+  facts: UiFacts,
+  offerText: string,
+  returning = false,
+): OutMessage {
+  const greeting = returning && firstName
+    ? `welcome back ${firstName.toLowerCase()} 👋`
+    : 'hey 👋 get google ai pro for 18 months, delivered right here after payment.';
   return {
     text: [
-      `${hi} i sell google ai pro 18 month activation links for ${naira(facts.unitPriceNgn)} each.`,
-      'pay here and your link comes to this chat automatically. ask me anything, or tap below.',
+      greeting,
+      `${naira(facts.unitPriceNgn)} per link + fee.`,
       `🔥 ${offerText}`,
     ].join('\n'),
     keyboard: [
       [{ text: 'buy a link', data: cb.buy(1) }],
       [
-        { text: 'my orders', data: cb.history(1) },
+        { text: 'see proof', data: cb.proof },
         { text: 'how it works', data: cb.help('how') },
       ],
-      [{ text: 'help', data: cb.help('hub') }],
     ],
   };
 }
@@ -109,9 +120,6 @@ export function payLabel(order: Pick<Order, 'amountNgn'>, facts: UiFacts): strin
 
 export function summaryCard({ order, maxQuantity, offerText, facts }: SummaryInput): OutMessage {
   const q = order.quantity;
-  const fee = facts.grossUp
-    ? `payment fee: ${naira(order.feeNgn)}`
-    : 'payment fee: added at checkout (card 2%, bank transfer 1.5%)';
   const keyboard: Keyboard = [
     [
       { text: '−', data: q > 1 ? cb.qty(order.id, q - 1) : cb.noop },
@@ -119,20 +127,18 @@ export function summaryCard({ order, maxQuantity, offerText, facts }: SummaryInp
       { text: '+', data: q < maxQuantity ? cb.qty(order.id, q + 1) : cb.noop },
     ],
   ];
-  if (order.checkoutUrl) keyboard.push([{ text: `pay ${payLabel(order, facts)}`, url: order.checkoutUrl }]);
-  keyboard.push([
-    { text: 'see proof', data: cb.proof },
-    { text: 'cancel', data: cb.cancel(order.id) },
-  ]);
+  // §2: [continue] tap creates the checkout. Until §2 is wired, fall back to the direct pay URL.
+  if (order.checkoutUrl) {
+    keyboard.push([{ text: `pay · ${payLabel(order, facts)}`, url: order.checkoutUrl }]);
+  } else {
+    keyboard.push([{ text: `continue · ${payLabel(order, facts)}`, data: cb.continuePay(order.id) }]);
+  }
+  keyboard.push([{ text: 'cancel', data: cb.cancel(order.id) }]);
   return {
     text: [
-      `order summary · ${order.orderNo}`,
-      `quantity: ${q} ${plural(q, 'link', 'links')}`,
-      `price per link: ${naira(order.unitPriceNgn)}`,
-      fee,
-      `total: ${payLabel(order, facts)}`,
-      `you can buy up to ${maxQuantity} right now.`,
-      '⚠️ no refund if the link expires before you activate it.',
+      `how many links?`,
+      `${naira(order.unitPriceNgn)} each + fee`,
+      '⚠️ no refund if a link expires before you activate it',
       `🔥 ${offerText}`,
     ].join('\n'),
     keyboard,
@@ -146,8 +152,8 @@ export function summaryResolved(order: Pick<Order, 'orderNo'>, outcome: SummaryO
   const text = {
     paid: `paid ✅ order ${order.orderNo}`,
     held: `payment received, being checked · order ${order.orderNo}`,
-    expired: `expired ⌛ order ${order.orderNo}. send /buy to start again.`,
-    cancelled: `cancelled · order ${order.orderNo}`,
+    expired: `expired ⌛ send /buy to start again`,
+    cancelled: `cancelled`,
   }[outcome];
   return { text };
 }
@@ -296,7 +302,11 @@ export function linksMessages(input: {
       });
     const keyboard: Keyboard = [];
     for (let i = 0; i < taps.length; i += 2) keyboard.push(taps.slice(i, i + 2));
-    if (p === groups.length - 1) keyboard.push([supportButton(facts, orderNo), { text: 'my orders', data: cb.history(1) }]);
+    if (p === groups.length - 1) {
+      // [need help] (WhatsApp) + [invite & earn 🎁] on last message, per Prompt D §5.
+      // ✅ per-link buttons are already above; these are the footer actions.
+      keyboard.push([{ text: 'need help', url: supportUrl(facts.supportIntl, orderNo) }, { text: 'invite & earn 🎁', data: cb.invite }]);
+    }
     return {
       text: group.map((b) => blocks[b]).join('\n'),
       html: true,

@@ -24,6 +24,7 @@ export function fakePort() {
   const answers: { queryId: string; text: string | undefined }[] = [];
   const albums: { chatId: number; photos: AlbumPhoto[]; caption: string }[] = [];
   const blocked = new Set<number>();
+  const deleted: number[] = [];
   let failSends = 0;
   let nextFile = 1;
 
@@ -62,6 +63,10 @@ export function fakePort() {
     async answer(queryId, text) {
       answers.push({ queryId, text });
     },
+    async delete(_chatId, messageId) {
+      messages.delete(messageId);
+      deleted.push(messageId);
+    },
   };
 
   return {
@@ -71,6 +76,7 @@ export function fakePort() {
     edits,
     answers,
     albums,
+    deleted,
     /** Current state of a message. */
     get: (id: number | null | undefined) => (id ? messages.get(id) : undefined),
     block: (chatId: number) => blocked.add(chatId),

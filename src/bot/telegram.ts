@@ -43,6 +43,8 @@ export interface TelegramPort {
   setButtons(chatId: number, messageId: number, keyboard?: Keyboard): Promise<EditOutcome>;
   /** Answers a button tap. Never throws. */
   answer(callbackQueryId: string, text?: string): Promise<void>;
+  /** Deletes a message. Never throws (best effort). */
+  delete(chatId: number, messageId: number): Promise<void>;
 }
 
 export function escapeHtml(text: string): string {
@@ -133,6 +135,9 @@ export function grammyPort(api: Api): TelegramPort {
     },
     async answer(callbackQueryId, text) {
       await api.answerCallbackQuery(callbackQueryId, text ? { text } : {}).catch(() => {});
+    },
+    async delete(chatId, messageId) {
+      await api.deleteMessage(chatId, messageId).catch(() => {});
     },
   };
 }

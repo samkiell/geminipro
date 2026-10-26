@@ -32,10 +32,10 @@ export function helpPage(page: HelpPage, c: HelpContext): string {
     case 'how':
       return [
         'how it works',
-        `1. tap buy and choose how many links you want (up to ${c.maxQtyPerOrder} per order).`,
-        `2. pay by card or bank transfer on the secure bachs checkout page. ₦${c.unitPriceNgn.toLocaleString('en-NG')} per link, ${c.feeLine}.`,
-        '3. your link arrives in this chat automatically, usually about a minute after payment.',
-        `the payment page stays open for ${c.paymentWindowMinutes} minutes.`,
+        `1. pick how many links (up to ${c.maxQtyPerOrder} per order)`,
+        '2. pay on the secure checkout',
+        '3. your link lands here in about a minute',
+        `\u20a6${c.unitPriceNgn.toLocaleString('en-NG')} per link + fee.`,
       ].join('\n');
     case 'get':
       return [

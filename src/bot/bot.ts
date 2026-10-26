@@ -286,20 +286,23 @@ async function storedLang(db: Db, telegramId: number): Promise<Lang> {
   return user?.lang ?? 'en';
 }
 
-/** In memory, per process: fine for one instance. Warns once per window, then stays quiet. */
+/** In memory, per process: fine for one instance. Warns once per window, then stays quiet.
+ * Callbacks never count (Prompt D §1). Only free text counts. */
 function rateLimiter({ max, windowMs }: { max: number; windowMs: number }, port: TelegramPort) {
   const hits = new Map<number, number[]>();
   const warned = new Map<number, number>();
   return async (ctx: Context, next: () => Promise<void>) => {
     const id = ctx.from?.id;
     if (id === undefined) return next();
+    // Callbacks never count toward the rate limit and never trigger the warning.
+    if (ctx.callbackQuery) return next();
     const now = Date.now();
     const recent = (hits.get(id) ?? []).filter((t) => now - t < windowMs);
     recent.push(now);
     hits.set(id, recent);
     if (hits.size > 50_000) hits.clear();
     if (recent.length <= max) return next();
-    if (ctx.callbackQuery) await port.answer(ctx.callbackQuery.id, 'slow down a little, try again in a few minutes');
+    // Rate limited: warn once per window, stay silent after that.
     if (now - (warned.get(id) ?? 0) > windowMs) {
       warned.set(id, now);
       await port.send(id, { text: "you're sending a lot of messages. give me a few minutes, then try again." }).catch(() => {});
