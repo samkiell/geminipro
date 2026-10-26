@@ -28,9 +28,12 @@ import { createReconciler } from './services/reconciler.js';
 import { createReferrals, type ReferralConfig } from './services/referrals.js';
 import { sendActivationReminders } from './services/reminders.js';
 import { createResellerClient } from './services/reseller.js';
-import { isPaused } from './services/settings.js';
+import { getSetting, isPaused, setSetting } from './services/settings.js';
 import { createLogger, type Logger } from './util/logger.js';
 import { withTimeout } from './util/time.js';
+
+/** settings key set by the live shop (production with a live Bachs key) on its database. */
+const LIVE_DATABASE = 'live_shop_database';
 
 function readConfig(): Config {
   loadDotEnv();
@@ -65,6 +68,25 @@ async function main(): Promise<void> {
     // Keep booting: Neon may still be waking up, and /health reports the state.
     logger.error({ err }, 'database not reachable at boot');
   }
+
+  // The live shop marks its database. Any other run on it (a local `pnpm dev` with the same
+  // DATABASE_URL) would buy mock links for real orders, so it refuses to start; one already running
+  // stands down at its next reconciler tick.
+  const liveShop = config.NODE_ENV === 'production' && config.BACHS_SECRET_KEY.startsWith('sk_live_');
+  const isLiveDatabase = async () => (await getSetting<boolean>(db, LIVE_DATABASE)) === true;
+  if (!liveShop && (await isLiveDatabase().catch(() => false))) {
+    logger.fatal('DATABASE_URL is the live shop database. Use a separate Neon branch and a test bot token for local runs.');
+    process.exit(1);
+  }
+  let liveMarked = false;
+  const reconcilerActive = async (): Promise<boolean> => {
+    if (!liveShop) return !(await isLiveDatabase());
+    if (!liveMarked) {
+      await setSetting(db, LIVE_DATABASE, true);
+      liveMarked = true;
+    }
+    return true;
+  };
 
   if (config.RESELLER_MOCK) await startInProcessMockReseller(config, logger);
 
@@ -237,6 +259,7 @@ async function main(): Promise<void> {
     sendNudges: () => sendPaymentNudges({ db, port, facts, logger }),
     sendReminders: () => sendActivationReminders({ db, port, logger, delayMinutes: config.REMINDER_DELAY_MINUTES }),
     grantRewards: () => referrals.grantPending(),
+    active: reconcilerActive,
   });
 
   const countdown = createCountdownRunner({
@@ -267,9 +290,18 @@ async function main(): Promise<void> {
 
   await app.listen({ host: '0.0.0.0', port: config.PORT });
   if (polling) {
-    bot
-      .start({ onStart: () => logger.info('telegram long polling started (development)') })
-      .catch((err: unknown) => logger.error({ err: (err as Error).message }, 'telegram polling stopped'));
+    // Never take over a webhook: it belongs to the deployed bot, and grammY's start() deletes it.
+    const webhook = await bot.api.getWebhookInfo().then(
+      (info) => info.url,
+      () => '',
+    );
+    if (webhook) {
+      logger.error({ webhook: new URL(webhook).host }, 'this bot has a webhook (the deployed shop), so not polling. use a test bot token for local runs');
+    } else {
+      bot
+        .start({ onStart: () => logger.info('telegram long polling started (development)') })
+        .catch((err: unknown) => logger.error({ err: (err as Error).message }, 'telegram polling stopped'));
+    }
   }
   reconciler.start();
   notify({

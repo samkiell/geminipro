@@ -89,6 +89,19 @@ function setup(overrides: Partial<ReconcilerDeps> = {}, checkout?: (id: string) 
 }
 
 describe('reconciler', () => {
+  it('stands down while active() is false: a local run on the live database touches nothing', async () => {
+    const id = await insertOrder(testDb.db, { status: 'paid', quantity: 1, paid: true });
+    let live = true;
+    const { reconciler } = setup({ active: async () => !live });
+    await reconciler.runOrders();
+    expect((await getOrder(testDb.db, id)).status).toBe('paid');
+    expect(mock.orderRequests()).toHaveLength(0);
+
+    live = false;
+    await reconciler.runOrders();
+    expect((await getOrder(testDb.db, id)).status).toBe('delivered');
+  });
+
   it('acceptance: a fulfilment killed mid way completes once after a restart', async () => {
     // The process bought link 1 of 2 at the reseller, then died holding the lease.
     const id = await insertOrder(testDb.db, { status: 'fulfilling', quantity: 2, paid: true, leaseUntil: new Date(Date.now() - 60_000) });

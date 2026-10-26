@@ -30,6 +30,8 @@ export interface ReconcilerDeps {
   sendReminders: () => Promise<number>;
   /** Referral rewards held back earlier (paused, no stock). */
   grantRewards?: () => Promise<number>;
+  /** Checked before every run; false skips it (a local run on the live shop's database stands down). */
+  active?: () => Promise<boolean>;
   ordersEveryMs?: number;
   balanceEveryMs?: number;
   now?: () => Date;
@@ -164,10 +166,21 @@ export function createReconciler(deps: ReconcilerDeps) {
     });
   }
 
+  /** True when this process must not touch orders. A failed check never stops the live shop. */
+  async function standDown(): Promise<boolean> {
+    if (!deps.active) return false;
+    try {
+      return !(await deps.active());
+    } catch {
+      return false;
+    }
+  }
+
   async function runOrders(): Promise<void> {
     if (running.orders) return;
     running.orders = true;
     try {
+      if (await standDown()) return;
       await step('expire', expire);
       await step('clean old drafts', async () => deleteOldOrderDrafts(db, new Date(now().getTime() - 24 * 60 * 60_000)));
       await step('nudges', deps.sendNudges);
@@ -186,6 +199,7 @@ export function createReconciler(deps: ReconcilerDeps) {
     if (running.balance) return;
     running.balance = true;
     try {
+      if (await standDown()) return;
       await step('balance check', async () => {
         const [balance, product, reserved] = await Promise.all([
           deps.reseller.getBalance(),
