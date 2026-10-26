@@ -51,6 +51,10 @@ async function main(): Promise<void> {
     level: config.NODE_ENV === 'production' ? 'info' : 'debug',
     pretty: config.NODE_ENV === 'development',
   });
+  // The count only, never the ids. Without admins, /admin and friends answer "i don't know that command".
+  const adminCount = config.ADMIN_TELEGRAM_IDS.length;
+  if (adminCount === 0) logger.warn('no admin ids configured: set ADMIN_TELEGRAM_IDS (send /myid to the bot to get yours)');
+  else logger.info({ adminCount }, 'admin ids configured');
 
   const database = createDb(config.DATABASE_URL);
   const db = database.db;

@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createBrain } from '../src/agent/brain.js';
 import { groqTransport, ModelPool } from '../src/agent/llm.js';
 import { registerBot, type BotDeps } from '../src/bot/bot.js';
+import { BUYER_COMMANDS } from '../src/bot/commands.js';
 import { createFlows, type Flows } from '../src/bot/flows.js';
 import { messages, users } from '../src/db/schema.js';
 import { buildServer } from '../src/server.js';
@@ -187,6 +188,15 @@ describe('commands', () => {
     expect(tg.sent[0]?.text).toContain('how many links?');
     expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['−', '3', '+', 'continue · ₦10,500 + fee', 'cancel']);
     expect(tg.sent).toHaveLength(1);
+  });
+
+  it('/myid answers anyone with their own telegram id', async () => {
+    await makeBot().handleUpdate(message('/myid', { user: 555 }));
+    expect(tg.textsTo(555)).toEqual(['your telegram id: 555']);
+  });
+
+  it('the buyer command menu is start, buy, history, invite, help', () => {
+    expect(BUYER_COMMANDS.map((c) => c.command)).toEqual(['start', 'buy', 'history', 'invite', 'help']);
   });
 
   it('/history and /help', async () => {

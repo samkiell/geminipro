@@ -148,6 +148,10 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
     await clearEphemeral(ctx.chat.id);
     await flows.showInvite(ctx.chat.id);
   });
+  // Unlisted, for everyone: the owner uses it to fill ADMIN_TELEGRAM_IDS.
+  bot.command('myid', async (ctx) => {
+    await port.send(ctx.chat.id, { text: `your telegram id: ${ctx.chat.id}` });
+  });
   bot.command('help', async (ctx) => {
     await clearEphemeral(ctx.chat.id);
     await flows.showHelp(ctx.chat.id, 'hub');
