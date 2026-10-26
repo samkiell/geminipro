@@ -230,6 +230,34 @@ export class BachsClient {
   }
 }
 
+/** Bachs behind the PaymentProvider interface. */
+export class BachsProvider {
+  readonly webhookConfigured: boolean;
+
+  constructor(
+    readonly client: BachsClient,
+    private readonly webhookSecret: string | undefined,
+  ) {
+    this.webhookConfigured = Boolean(webhookSecret);
+  }
+
+  createCheckout(input: CreateCheckoutInput): Promise<CreatedCheckout> {
+    return this.client.createCheckout(input);
+  }
+
+  verifyPayment(checkoutId: string): Promise<CheckoutSession> {
+    return this.client.getCheckout(checkoutId);
+  }
+
+  verifyWebhook(rawBody: Buffer, headers: Headers): boolean {
+    return this.webhookSecret !== undefined && verifyWebhookSignature(rawBody, headers, this.webhookSecret);
+  }
+
+  getFeePreference(): Promise<FeePreference> {
+    return this.client.getFeePreference();
+  }
+}
+
 type Headers = Record<string, string | string[] | undefined>;
 
 function header(headers: Headers, name: string): string | undefined {

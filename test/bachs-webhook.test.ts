@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { events, orders, users, type OrderStatus } from '../src/db/schema.js';
 import { buildServer } from '../src/server.js';
-import { BachsError, type CheckoutSession } from '../src/services/bachs.js';
+import { BachsError, verifyWebhookSignature, type CheckoutSession } from '../src/services/bachs.js';
 import type { Alert } from '../src/services/notifier.js';
 import { paymentReference } from '../src/services/orders.js';
 import { createLogger } from '../src/util/logger.js';
@@ -11,6 +11,16 @@ import { createTestDb } from './helpers/db.js';
 
 const SECRET = 'whsec_route_test';
 const logger = createLogger({ level: 'silent' });
+
+/** The real signature check, with a scripted view of the checkout. */
+function payments(secret: string | undefined, verifyPayment: () => Promise<CheckoutSession>) {
+  return {
+    webhookConfigured: secret !== undefined,
+    verifyWebhook: (raw: Buffer, headers: Record<string, string | string[] | undefined>) =>
+      secret !== undefined && verifyWebhookSignature(raw, headers, secret),
+    verifyPayment,
+  };
+}
 
 let testDb: Awaited<ReturnType<typeof createTestDb>>;
 let alerts: Alert[];
@@ -35,13 +45,10 @@ beforeEach(async () => {
     pingDb: async () => {},
     bachsWebhook: {
       db: testDb.db,
-      bachs: {
-        getCheckout: async () => {
-          if (checkout instanceof Error) throw checkout;
-          return checkout;
-        },
-      },
-      webhookSecret: SECRET,
+      payments: payments(SECRET, async () => {
+        if (checkout instanceof Error) throw checkout;
+        return checkout;
+      }),
       notify: (alert) => alerts.push(alert),
       onPaid: (orderId) => {
         paid.push(orderId);
@@ -163,7 +170,7 @@ describe('POST /bachs/webhook', () => {
     expect(paid).toEqual([order.id]);
   });
 
-  it('an amount below the order does not mark paid, holds the order and raises an alert', async () => {
+  it('an amount that differs from the order does not mark paid, holds the order and raises an alert', async () => {
     const order = await createOrder();
     checkout = { ...(checkout as CheckoutSession), amountMinor: 3000_00 };
     const res = await deliver(eventBody(order));
@@ -172,10 +179,15 @@ describe('POST /bachs/webhook', () => {
     const row = await orderRow(order.id);
     expect(row?.status).toBe('needs_attention');
     expect(row?.paidAt).toBeNull();
-    expect(row?.error).toContain('below the order amount');
+    expect(row?.error).toContain('does not match the order amount');
     expect(alerts).toMatchObject([{ level: 'critical', title: 'payment held for review' }]);
     await flush();
     expect(paid).toEqual([]);
+
+    // Exact match: more than the order is held too.
+    const over = await createOrder();
+    checkout = { ...(checkout as CheckoutSession), amountMinor: 3600_00 };
+    expect((await deliver(eventBody(over, 'evt_over'))).json()).toEqual({ ok: true, result: 'held' });
   });
 
   it('holds a payment in the wrong currency or for another reference', async () => {
@@ -245,8 +257,7 @@ describe('POST /bachs/webhook', () => {
       pingDb: async () => {},
       bachsWebhook: {
         db: testDb.db,
-        bachs: { getCheckout: async () => checkout as CheckoutSession },
-        webhookSecret: undefined,
+        payments: payments(undefined, async () => checkout as CheckoutSession),
         notify: (alert) => alerts.push(alert),
         onPaid: () => {},
       },
@@ -273,8 +284,7 @@ describe('bachs webhook logging', () => {
       pingDb: async () => {},
       bachsWebhook: {
         db: testDb.db,
-        bachs: { getCheckout: async () => checkout as CheckoutSession },
-        webhookSecret: SECRET,
+        payments: payments(SECRET, async () => checkout as CheckoutSession),
         notify: () => {},
         onPaid: () => {},
       },

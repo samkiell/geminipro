@@ -43,7 +43,7 @@ try {
       {
         db: database.db,
         reseller: createResellerClient(config),
-        bachs: new BachsClient({ secretKey: config.BACHS_SECRET_KEY }),
+        payments: new BachsClient({ secretKey: config.BACHS_SECRET_KEY }),
         pricing: pricingFromConfig(config),
         maxQtyPerOrder: config.MAX_QTY_PER_ORDER,
         salesCutoff: config.SALES_CUTOFF,

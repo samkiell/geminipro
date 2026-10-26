@@ -3,18 +3,20 @@ import type { FastifyBaseLogger, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import { events, type Order } from '../db/schema.js';
-import { verifyWebhookSignature, type BachsClient, type CheckoutSession } from '../services/bachs.js';
+import type { CheckoutSession } from '../services/bachs.js';
 import type { Notify } from '../services/notifier.js';
 import { findOrderForPayment, holdPayment, markPaid, PAYABLE } from '../services/orders.js';
+import type { PaymentProvider } from '../services/payments.js';
 
 export interface BachsWebhookOptions {
   db: Db;
-  bachs: Pick<BachsClient, 'getCheckout'>;
-  /** Without it no delivery can be verified, so every one gets 503 and Bachs retries it later. */
-  webhookSecret: string | undefined;
+  /** Without a webhook secret no delivery can be verified: every one gets 503 and is retried later. */
+  payments: Pick<PaymentProvider, 'verifyPayment' | 'verifyWebhook' | 'webhookConfigured'>;
   notify: Notify;
   /** Called once per order, after it becomes paid. Runs after the response is sent. */
   onPaid: (orderId: string) => Promise<void> | void;
+  /** Called after this route changed an order (paid or held), to refresh the buyer's chat. */
+  onChange?: (orderId: string) => void;
 }
 
 // Both mean "this checkout was paid"; either can arrive first, and each can arrive more than once.
@@ -44,12 +46,12 @@ export const bachsWebhookRoutes: FastifyPluginAsync<BachsWebhookOptions> = async
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
 
   app.post('/bachs/webhook', async (req, reply) => {
-    if (!opts.webhookSecret) {
+    if (!opts.payments.webhookConfigured) {
       req.log.error('bachs webhook received but BACHS_WEBHOOK_SECRET is not set; asking for a retry');
       return reply.code(503).send({ ok: false });
     }
     const raw = req.body;
-    if (!Buffer.isBuffer(raw) || !verifyWebhookSignature(raw, req.headers, opts.webhookSecret)) {
+    if (!Buffer.isBuffer(raw) || !opts.payments.verifyWebhook(raw, req.headers)) {
       req.log.warn('bachs webhook rejected: bad or missing signature');
       opts.notify({
         level: 'warning',
@@ -109,7 +111,7 @@ async function handleEvent(opts: BachsWebhookOptions, event: Envelope, log: Fast
   // Never trust the webhook body alone: ask Bachs for the checkout's real state.
   let checkout: CheckoutSession;
   try {
-    checkout = await opts.bachs.getCheckout(sessionId);
+    checkout = await opts.payments.verifyPayment(sessionId);
   } catch (err) {
     orderLog.warn({ err }, 'could not verify checkout with Bachs; asking for a retry');
     return { status: 503, result: 'verify_failed' };
@@ -126,6 +128,7 @@ async function handleEvent(opts: BachsWebhookOptions, event: Envelope, log: Fast
       await holdPayment(tx, order.id, problem);
     });
     orderLog.error({ problem }, 'payment held for review');
+    opts.onChange?.(order.id);
     opts.notify({
       level: 'critical',
       title: 'payment held for review',
@@ -141,6 +144,7 @@ async function handleEvent(opts: BachsWebhookOptions, event: Envelope, log: Fast
   if (!paid) return { status: 200, result: 'already_handled' };
 
   orderLog.info('order paid');
+  opts.onChange?.(paid.id);
   setImmediate(() => {
     Promise.resolve()
       .then(() => opts.onPaid(paid.id))
@@ -158,10 +162,10 @@ function paymentProblem(order: Order, checkout: CheckoutSession): string | undef
   if (checkout.paymentStatus && !['succeeded', 'paid'].includes(checkout.paymentStatus)) {
     return `payment status is ${checkout.paymentStatus}`;
   }
-  // At least the order amount. A customer_pays fee can only add to it.
+  // Exactly the amount the checkout was created for (the Bachs docs: match amount and currency).
   const expectedMinor = order.amountNgn * 100;
-  if (checkout.amountMinor < expectedMinor) {
-    return `checkout amount ${checkout.amountMinor / 100} NGN is below the order amount ${order.amountNgn} NGN`;
+  if (checkout.amountMinor !== expectedMinor) {
+    return `checkout amount ${checkout.amountMinor / 100} NGN does not match the order amount ${order.amountNgn} NGN`;
   }
   return undefined;
 }
