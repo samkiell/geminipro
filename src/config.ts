@@ -45,6 +45,8 @@ const envSchema = z.object({
   RESELLER_API_KEY: z.string(),
   RESELLER_PRODUCT_ID: int().positive(),
   RESELLER_MOCK: bool(false),
+  // Used instead of RESELLER_BASE_URL when RESELLER_MOCK=true (npm run mock:reseller).
+  RESELLER_MOCK_URL: z.url().default('http://127.0.0.1:4010/api/reseller/v1'),
 
   GROQ_API_KEY: z.string(),
   GROQ_MODEL: z.string().default('openai/gpt-oss-120b'),
@@ -66,6 +68,23 @@ const envSchema = z.object({
     .datetime({ offset: true, error: 'expected an ISO time with offset like 2026-10-29T19:30:00+01:00' })
     .transform((s) => new Date(s))
     .optional(),
+}).superRefine((env, ctx) => {
+  // Test payments must never buy real links, and real payments must never get mock links.
+  const livePayments = env.PAYSTACK_SECRET_KEY.startsWith('sk_live_');
+  if (livePayments && env.RESELLER_MOCK) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RESELLER_MOCK'],
+      message: 'must be false with a live Paystack key, or buyers pay real money for mock links',
+    });
+  }
+  if (!livePayments && !env.RESELLER_MOCK) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RESELLER_MOCK'],
+      message: 'must be true with a Paystack test key, or test payments spend the real reseller balance',
+    });
+  }
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -85,7 +104,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const problems = result.error.issues.map((issue) => {
     const key = String(issue.path[0] ?? '(env)');
-    const detail = key in present ? issue.message : 'is required but not set';
+    const missing = issue.code === 'invalid_type' && !(key in present);
+    const detail = missing ? 'is required but not set' : issue.message;
     return `  - ${key}: ${detail}`;
   });
   throw new ConfigError(
