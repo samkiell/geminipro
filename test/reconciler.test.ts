@@ -7,7 +7,6 @@ import { createFulfilment, itemIdempotencyKey } from '../src/services/fulfilment
 import { createNotifier, type Alert } from '../src/services/notifier.js';
 import { createReconciler, type ReconcilerDeps } from '../src/services/reconciler.js';
 import { computeAvailability, ResellerClient } from '../src/services/reseller.js';
-import { getSetting } from '../src/services/settings.js';
 import { createLogger } from '../src/util/logger.js';
 import { createTestDb } from './helpers/db.js';
 import { getItems, getOrder, insertOrder } from './helpers/orders.js';
@@ -227,21 +226,29 @@ describe('reconciler', () => {
     expect(alerts).toMatchObject([{ title: 'low stock', cooldownKey: 'low_stock' }]);
   });
 
-  it('sends the daily summary once a day, at 21:00 WAT or later', async () => {
+  it('sends a sales summary every 5 hours, starting the clock on the first run, never at night', async () => {
     await insertOrder(testDb.db, { status: 'delivered' });
-    const before = setup({ now: () => new Date('2026-10-26T19:59:00Z') }); // 20:59 WAT
-    await before.reconciler.runOrders();
-    expect(alerts.filter((a) => a.title === 'daily summary')).toHaveLength(0);
+    const sent = () => alerts.filter((a) => a.title === 'sales summary');
+    await setup({ now: () => new Date('2026-10-26T13:00:00Z') }).reconciler.runOrders(); // 14:00 WAT: starts the clock
+    await setup({ now: () => new Date('2026-10-26T17:59:00Z') }).reconciler.runOrders(); // 18:59 WAT: not 5 hours yet
+    expect(sent()).toHaveLength(0);
 
-    const after = setup({ now: () => new Date('2026-10-26T20:01:00Z') }); // 21:01 WAT
-    await after.reconciler.runOrders();
-    await after.reconciler.runOrders();
-    const summaries = alerts.filter((a) => a.title === 'daily summary');
+    const due = setup({ now: () => new Date('2026-10-26T18:01:00Z') }); // 19:01 WAT
+    await due.reconciler.runOrders();
+    await due.reconciler.runOrders();
+    const summaries = sent();
     expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.body).toContain('🕔 since 26 oct, 2:00pm wat\n1 order · 1 link · ₦3,500\n\n💰 sales');
     expect(summaries[0]?.body).toContain('💰 sales\ntoday: 1 order · 1 link · ₦3,500\nall time: 1 order · 1 link · ₦3,500\n\n⏳ right now');
     expect(summaries[0]?.body).toContain('📦 reseller\nbalance: $');
     expect(summaries[0]?.body).toContain('🤖 ai today\nmodel calls: 0');
-    expect(await getSetting(testDb.db, 'last_daily_summary')).toBe('2026-10-26');
+
+    // The next one falls due at 00:01 WAT: held through quiet hours, sent at 07:00.
+    await setup({ now: () => new Date('2026-10-26T23:30:00Z') }).reconciler.runOrders(); // 00:30 WAT
+    expect(sent()).toHaveLength(1);
+    await setup({ now: () => new Date('2026-10-27T06:05:00Z') }).reconciler.runOrders(); // 07:05 WAT
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]?.body).toContain('🕔 since 26 oct, 7:01pm wat');
   });
 
   it('one failing job does not stop the others', async () => {

@@ -73,7 +73,7 @@ Two separate flows. The bot never moves money between them.
 - Light memory: first name, new or returning, past orders, preferred language. Pidgin in, light pidgin out.
 - Hard limits: the agent never sees or writes activation links, never confirms a payment, never calls the reseller, and cannot change the price. Money and delivery are deterministic code. Decisions are validated in code (quantity limits, order ownership, one pending order per user); any intent outside the list, or invalid JSON, gets the scripted reply. User text is untrusted.
 - Style: very short, lowercase (enforced in code), casual, english unless the buyer writes pidgin, no em dashes (stripped in code).
-- Resilience: each model call times out at 6s, at most 2 models are tried per message, a rate limited model is skipped until its reset, 6 model messages per buyer per minute, `LLM_CONCURRENCY` calls at once with a short queue. Otherwise the bot switches at once to smart scripted replies: it still opens the order card, history, the right help page or the proof album, in varied wording (english or pidgin), with [buy] [price] [proof] [support], so sales never stop. More than 5 scripted replies in 5 minutes alerts the owner; the daily summary counts model calls and fallbacks. Groq's free tier is not enough for launch traffic: upgrade the plan before launch.
+- Resilience: each model call times out at 6s, at most 2 models are tried per message, a rate limited model is skipped until its reset, 6 model messages per buyer per minute, `LLM_CONCURRENCY` calls at once with a short queue. Otherwise the bot switches at once to smart scripted replies: it still opens the order card, history, the right help page or the proof album, in varied wording (english or pidgin), with [buy] [price] [proof] [support], so sales never stop. More than 5 scripted replies in 5 minutes alerts the owner; the sales summary counts model calls and fallbacks. Groq's free tier is not enough for launch traffic: upgrade the plan before launch.
 - One response per action: a UI intent (buy, price, history, show_order, proof, help, support, owner, shop, invite) sends only its UI and drops the model's reply; `chat` sends only the reply. One user action produces at most 2 new messages (edits do not count). Button taps never count toward the message rate limit, and the rate limit notice is sent once per window.
 - Buyer commands, exactly five: `/start`, `/buy`, `/history`, `/invite`, `/help`. `/myid` is unlisted and answers anyone with their Telegram id. Typed requests like "my orders" or "where is my link" open the history view.
 - Owner side (stretch goal): natural language read only questions ("how much did i sell today", "what's the balance") through an admin tool set. Destructive actions stay explicit commands.
@@ -141,7 +141,7 @@ Buttons: [✅ i've activated it] per link, then [need help] (WhatsApp, prefilled
 
 The first delivery message carries Telegram's confetti message effect (`MESSAGE_EFFECT_CONFETTI`, private chats only). If Telegram rejects the effect (HTTP 400) the message is sent once more without it; any other failure is not resent, so links are never sent twice. A link counts as delivered only after Telegram accepts the message.
 
-The last step of the buy flow: once the buyer activates a link they tap its ✅ and confirm ("yes, it is activated. close it" or "not yet"). The link is then closed: every message that showed it is edited to "activated ✅, closed", and it is never shown again (not in history, not by /resend). The bot cannot cancel the link at Google; closing it only means the shop stops showing it. Activations are counted in /stats and the daily summary.
+The last step of the buy flow: once the buyer activates a link they tap its ✅ and confirm ("yes, it is activated. close it" or "not yet"). The link is then closed: every message that showed it is edited to "activated ✅, closed", and it is never shown again (not in history, not by /resend). The bot cannot cancel the link at Google; closing it only means the shop stops showing it. Activations are counted in /stats and the sales summary.
 
 ### 8.5A Buyer experience
 
@@ -184,7 +184,7 @@ The last step of the buy flow: once the buyer activates a link they tap its ✅ 
 - `/offertext <text>`: change the offer line; `/offertext` alone shows it.
 - `/leads`: latest 10 business inquiries.
 - Admin commands are only visible to and usable by admins; for anyone else they do not exist. To find your id, send `/myid` to the bot and put it in `ADMIN_TELEGRAM_IDS`. At boot the service logs how many admin ids are set (not the ids) and warns if there are none.
-- Daily summary at 21:00 WAT: orders, links sold, revenue, failures, reseller balance and links left, pending orders, referrals.
+- Sales summary every 5 hours (`SUMMARY_EVERY_HOURS`), none from 23:00 to 07:00 WAT: sales since the last summary, today and all time, failures, pending orders, reseller balance and links left, activations, referrals, AI usage.
 
 ### 8.10 Referral program
 

@@ -16,7 +16,7 @@ Short answers for running the shop. Admin commands work only in an admin's own c
 
 ## Alerts
 
-Alerts arrive by email, in your Telegram chat with the bot, and on ntfy, all at once (see the README for the list). The same system alert (low balance, rate limits...) comes at most once every 30 minutes, so silence after an alert does not mean it is fixed: check with `/balance` or `/stats`. Order alerts come every time. The daily summary arrives at 21:00 WAT.
+Alerts arrive by email, in your Telegram chat with the bot, and on ntfy, all at once (see the README for the list). The same system alert (low balance, rate limits...) comes at most once every 30 minutes, so silence after an alert does not mean it is fixed: check with `/balance` or `/stats`. Order alerts come every time. A sales summary arrives every 5 hours (none from 23:00 to 07:00 WAT); change the gap with `SUMMARY_EVERY_HOURS`.
 
 Errors and crashes in production arrive the same way, titled `error: ...` or `crash: ...`, with what failed and why. The same error repeats at most every 30 minutes (with a count). The full log is in the Render dashboard (Logs).
 
@@ -54,7 +54,7 @@ Check it promptly. If it failed when used promptly, `/replace GP-1042` buys one 
 
 ## Groq is down or rate limited
 
-The bot switches to scripted replies by itself and keeps selling through the order card, `/buy`, buttons and proof. It goes back to the model when Groq has room again. You get an alert when more than 5 buyers in 5 minutes got scripted replies, and the daily summary shows model calls, 429s and fallbacks. If it keeps happening: upgrade the Groq plan, and check the limits page in the Groq console (each model in `GROQ_MODELS` has its own limits).
+The bot switches to scripted replies by itself and keeps selling through the order card, `/buy`, buttons and proof. It goes back to the model when Groq has room again. You get an alert when more than 5 buyers in 5 minutes got scripted replies, and the sales summary shows model calls, 429s and fallbacks. If it keeps happening: upgrade the Groq plan, and check the limits page in the Groq console (each model in `GROQ_MODELS` has its own limits).
 
 ## Proof screenshots
 

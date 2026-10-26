@@ -272,6 +272,7 @@ async function main(): Promise<void> {
     sendNudges: () => sendPaymentNudges({ db, port, facts, logger }),
     sendReminders: () => sendActivationReminders({ db, port, logger, delayMinutes: config.REMINDER_DELAY_MINUTES }),
     grantRewards: () => referrals.grantPending(),
+    summaryEveryHours: config.SUMMARY_EVERY_HOURS,
     active: reconcilerActive,
   });
 

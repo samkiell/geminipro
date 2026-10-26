@@ -72,7 +72,7 @@ export interface StatsBlock {
 }
 
 const howMany = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-const totalsLine = (t: Totals) => `${howMany(t.orders, 'order', 'orders')} · ${howMany(t.links, 'link', 'links')} · ${naira(t.revenueNgn)}`;
+export const totalsLine = (t: Totals) => `${howMany(t.orders, 'order', 'orders')} · ${howMany(t.links, 'link', 'links')} · ${naira(t.revenueNgn)}`;
 
 /** Sales, orders open right now, activations and referrals: one block each. */
 export function statsBlocks(s: SalesStats, r: ReferralStats, linkPriceCents?: number): StatsBlock[] {
@@ -98,6 +98,11 @@ export function blocksHtml(blocks: StatsBlock[]): string {
 /** Plain text for alerts, which also go to email and ntfy: title, lines, a blank line between. */
 export function blocksText(blocks: StatsBlock[]): string {
   return blocks.map((b) => [b.title, ...b.lines].join('\n')).join('\n\n');
+}
+
+/** Paid sales since a moment (the previous summary). */
+export function salesSince(db: Db, since: Date): Promise<Totals> {
+  return totals(db, since);
 }
 
 export async function salesStats(db: Db, now = new Date()): Promise<SalesStats> {

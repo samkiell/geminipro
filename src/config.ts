@@ -99,6 +99,8 @@ const envSchema = z.object({
   REFERRAL_THRESHOLD: int().positive().default(3),
   REFERRAL_MAX_REWARDS: int().positive().default(3),
   BACHS_SESSION_TTL_MINUTES: int().positive().default(15),
+  // Hours between the owner's sales summaries (none 23:00 to 07:00 WAT).
+  SUMMARY_EVERY_HOURS: int().positive().default(5),
 
   // ISO time with an explicit offset, e.g. 2026-10-29T19:30:00+01:00. Unset means no cutoff.
   SALES_CUTOFF: z.iso

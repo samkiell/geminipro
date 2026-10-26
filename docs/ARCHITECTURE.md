@@ -89,12 +89,12 @@ geminipro/
       fulfilment.ts       fulfil orders, partial handling, delivery (confetti effect)
       referrals.ts        referral codes, attribution, qualification, reward orders
       countdown.ts        one loop that keeps payment card countdowns live
-      stats.ts            /stats and daily summary numbers
+      stats.ts            /stats and sales summary numbers
       reminders.ts        activation reminder with quiet hours
       leads.ts            business inquiries
       proof.ts            proof screenshots: seed, album send with file_id reuse, admin add/remove
       settings.ts         paused, offer_text, alert cooldowns, model usage
-      reconciler.ts       timers: expire, drafts, nudge, verify, recover, referral rewards, balance, reminders, daily summary
+      reconciler.ts       timers: expire, drafts, nudge, verify, recover, referral rewards, balance, reminders, sales summary
       notifier.ts         email, telegram admin, ntfy
     db/
       schema.ts, client.ts, migrate.ts, migrations/
@@ -174,7 +174,7 @@ Not built: every admin action is a command or an /admin panel button.
 ### 5.6 Robustness under load
 
 - **Model pool** (`agent/llm.ts`): `GROQ_MODELS`, best first (default qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b; qwen passed every eval check at about 0.9s a call). It learns each model's remaining tokens and requests from Groq's headers, rests a model after a 429 until `retry-after` or its reset time and moves to the next at once, rests it briefly on 5xx or timeout, tries at most 2 models per message, times out each call at 6s, and caps calls in flight (`LLM_CONCURRENCY`) with a short queue. When no model is usable it answers at once without a network call, so the buyer gets the scripted reply in milliseconds.
-- **Metrics**: every call is logged with model, latency, prompt and completion tokens and status (never content). Per WAT day the counts of model calls, 429s, free answers (fast path and cache) and scripted fallbacks are kept in `settings` (`llm_usage:<date>`) and shown in the daily summary. More than 5 scripted fallbacks in 5 minutes alerts the owner (30 minute cooldown).
+- **Metrics**: every call is logged with model, latency, prompt and completion tokens and status (never content). Per WAT day the counts of model calls, 429s, free answers (fast path and cache) and scripted fallbacks are kept in `settings` (`llm_usage:<date>`) and shown in the sales summary. More than 5 scripted fallbacks in 5 minutes alerts the owner (30 minute cooldown).
 - **Per user queue**: one update at a time per chat, so double taps and quick messages never race.
 - **Telegram**: one Bot API client with 15s timeouts and auto retry for Telegram's own 429s; webhook replies after 9s while the handler finishes.
 - **Fulfilment**: at most 3 orders bought at once; each link has a fixed idempotency key.
@@ -386,7 +386,7 @@ fulfil(orderId):
 - `paid`, `partial`, or `fulfilling` with expired lease: run `fulfil`. Paid `needs_attention` orders are retried every 10 minutes (after a top up they complete on their own), except deliveries blocked by the buyer, which wait for `/resend`.
 - Balance check every 5 minutes: alert if fewer than `LOW_BALANCE_ORDERS` links are left by stock or by balance, after subtracting units promised to open orders (with a cooldown so alerts are not spammed).
 - Each job is isolated (one failing never stops the others) and a run waits for the fulfilments it started, so ticks never overlap.
-- Activation reminders (quiet hours 23:00 to 07:00 WAT) and the daily admin summary at 21:00 WAT.
+- Activation reminders and the owner's sales summary every `SUMMARY_EVERY_HOURS` (5), both held during quiet hours (23:00 to 07:00 WAT).
 
 ## 8. Reseller client
 
@@ -403,7 +403,7 @@ fulfil(orderId):
 - Telegram message to the admin chat id(s)
 - ntfy.sh topic push (high priority for failures)
 
-Triggers: low balance, out of stock, `needs_attention` order, partial order, invalid API key, webhook signature failure, repeated Groq failure, boot after crash, buyer asked for support, buyer needs help activating, new lead. Each trigger type has a cooldown (default 30 minutes, stored in `settings` as `alert_cooldown:<key>` so a restart does not resend, checked one at a time per key so a burst sends once) except order failures. A daily summary goes out at 21:00 WAT: orders, links sold, revenue, failures, reseller balance and links left, pending orders.
+Triggers: low balance, out of stock, `needs_attention` order, partial order, invalid API key, webhook signature failure, repeated Groq failure, boot after crash, buyer asked for support, buyer needs help activating, new lead. Each trigger type has a cooldown (default 30 minutes, stored in `settings` as `alert_cooldown:<key>` so a restart does not resend, checked one at a time per key so a burst sends once) except order failures. A sales summary goes out every 5 hours outside quiet hours: sales since the last one, today and all time, failures, pending orders, reseller balance and links left, activations, referrals, AI usage.
 
 ## 10. Deployment
 

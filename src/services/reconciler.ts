@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNotNull, lt, or, sql } from 'drizzle-orm';
 import type { Flows } from '../bot/flows.js';
 import { readUsage } from '../agent/usage.js';
+import { watDateTime } from '../bot/views.js';
 import type { Db } from '../db/client.js';
 import { events, orders } from '../db/schema.js';
 import type { Logger } from '../util/logger.js';
@@ -10,7 +11,8 @@ import { paymentProblem, type PaymentProvider } from './payments.js';
 import type { ResellerClient } from './reseller.js';
 import { getSetting, setSetting } from './settings.js';
 import { referralStats } from './referrals.js';
-import { blocksText, salesStats, statsBlocks, watDateKey } from './stats.js';
+import { isQuietHour } from './reminders.js';
+import { blocksText, salesSince, salesStats, statsBlocks, totalsLine } from './stats.js';
 
 // docs/ARCHITECTURE.md 7.4. Catches whatever the event driven paths missed: a sleeping service,
 // a lost webhook, a crash in the middle of fulfilment. Runs once at boot, then on timers.
@@ -29,6 +31,8 @@ export interface ReconcilerDeps {
   sendReminders: () => Promise<number>;
   /** Referral rewards held back earlier (paused, no stock). */
   grantRewards?: () => Promise<number>;
+  /** Hours between owner summaries. Default 5. */
+  summaryEveryHours?: number;
   /** Checked before every run; false skips it (a local run on the live shop's database stands down). */
   active?: () => Promise<boolean>;
   ordersEveryMs?: number;
@@ -38,7 +42,7 @@ export interface ReconcilerDeps {
 
 const VERIFY_EVERY_MS = 2 * 60_000;
 const NEEDS_ATTENTION_RETRY_MINUTES = 10;
-const DAILY_SUMMARY_HOUR_WAT = 21;
+const LAST_SUMMARY = 'last_summary_at';
 
 export function createReconciler(deps: ReconcilerDeps) {
   const { db, logger } = deps;
@@ -131,15 +135,23 @@ export function createReconciler(deps: ReconcilerDeps) {
     await Promise.all(stuck.map((o) => deps.fulfil(o.id)));
   }
 
-  async function dailySummary(): Promise<void> {
+  /**
+   * The owner's sales summary every `summaryEveryHours`, never in quiet hours (23:00 to 07:00 WAT):
+   * one due at night goes out at 07:00 and covers the night. The first run only starts the clock,
+   * so a deploy never sends an extra one.
+   */
+  async function summary(): Promise<void> {
     const t = now();
-    const hourWat = (t.getUTCHours() + 1) % 24;
-    if (hourWat < DAILY_SUMMARY_HOUR_WAT) return;
-    const today = watDateKey(t);
-    if ((await getSetting<string>(db, 'last_daily_summary')) === today) return;
-    await setSetting(db, 'last_daily_summary', today);
+    const last = await getSetting<string>(db, LAST_SUMMARY);
+    if (!last) {
+      await setSetting(db, LAST_SUMMARY, t.toISOString());
+      return;
+    }
+    const lastAt = new Date(last);
+    if (isQuietHour(t) || t.getTime() - lastAt.getTime() < (deps.summaryEveryHours ?? 5) * 60 * 60_000) return;
+    await setSetting(db, LAST_SUMMARY, t.toISOString());
 
-    const [s, ai, refs] = await Promise.all([salesStats(db, t), readUsage(db, t), referralStats(db)]);
+    const [s, recent, ai, refs] = await Promise.all([salesStats(db, t), salesSince(db, lastAt), readUsage(db, t), referralStats(db)]);
     let reseller = ['unreachable'];
     let linkPriceCents: number | undefined;
     try {
@@ -150,13 +162,13 @@ export function createReconciler(deps: ReconcilerDeps) {
     } catch {
       // keep the placeholder
     }
-    const blocks = statsBlocks(s, refs, linkPriceCents);
-    blocks.splice(2, 0, { title: '📦 reseller', lines: reseller });
+    const blocks = [{ title: `🕔 since ${watDateTime(lastAt)}`, lines: [totalsLine(recent)] }, ...statsBlocks(s, refs, linkPriceCents)];
+    blocks.splice(3, 0, { title: '📦 reseller', lines: reseller });
     blocks.push({
       title: '🤖 ai today',
       lines: [`model calls: ${ai.calls} (${ai.rateLimited} rate limited)`, `answered free: ${ai.free}`, `scripted fallbacks: ${ai.fallbacks}`],
     });
-    deps.notify({ level: 'info', title: 'daily summary', body: blocksText(blocks) });
+    deps.notify({ level: 'info', title: 'sales summary', body: blocksText(blocks) });
   }
 
   /** True when this process must not touch orders. A failed check never stops the live shop. */
@@ -181,7 +193,7 @@ export function createReconciler(deps: ReconcilerDeps) {
       await step('recover fulfilment', recover);
       if (deps.grantRewards) await step('referral rewards', deps.grantRewards);
       await step('activation reminders', deps.sendReminders);
-      await step('daily summary', dailySummary);
+      await step('sales summary', summary);
     } finally {
       running.orders = false;
     }
