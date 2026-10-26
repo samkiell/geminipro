@@ -1,9 +1,9 @@
-# PRD: samkielbot_geminipro
+# PRD: geminiprosamkiel_bot
 
 | | |
 |---|---|
 | **Owner** | Samuel Ezekiel (@samkieldev) |
-| **Bot handle** | @samkielbot_geminipro |
+| **Bot handle** | @geminiprosamkiel_bot |
 | **Repo** | geminipro |
 | **Status** | Final v2.1 (agentic buyer chat) |
 | **Date** | 26 Oct 2026 |
@@ -11,7 +11,7 @@
 
 ## 1. Summary
 
-A Telegram bot that sells Gemini Pro 18-month (Jio offer) activation links with zero manual steps. A buyer chats with the bot, pays in NGN through Paystack, and the bot automatically buys the links from the upstream reseller API and sends them to the buyer. Support runs through one WhatsApp number.
+A Telegram bot that sells Gemini Pro 18-month (Jio offer) activation links with zero manual steps. A buyer chats with the bot, pays in NGN through Bachs, and the bot automatically buys the links from the upstream reseller API and sends them to the buyer. Support runs through one WhatsApp number.
 
 ## 2. Problem
 
@@ -38,10 +38,10 @@ Selling manually means: fund the reseller balance, buy on the reseller's bot, co
 
 Two separate flows. The bot never moves money between them.
 
-1. **NGN in:** buyer pays via Paystack. Funds sit in the owner's Paystack balance and are withdrawn to his bank manually.
-2. **USD out:** the reseller account is prepaid in USD, topped up by the owner in crypto. Each order deducts from that balance (about $0.90 per link).
+1. **NGN in:** buyer pays via Bachs (NGN card or bank transfer). Funds sit in the owner's Bachs balance (NGN is available immediately) and are withdrawn to his bank manually.
+2. **USD out:** the reseller account is prepaid in USD, topped up by the owner in crypto. Each order deducts from that balance (about $1.20 per link as of 26 Oct).
 
-**Pricing:** ₦3,500 per link. Paystack transaction fees are paid by the buyer, so the owner receives the full ₦3,500 per link. The bot tells buyers the price is "₦3,500 plus paystack fees". Implementation: use Paystack's setting that makes the customer bear transaction fees if it is available on the account. If it is not, the bot adds the fee itself (gross-up with a configurable fee formula, about ₦3,655 for one link at 1.5% + ₦100) and shows the buyer the total before payment. Bulk orders: ₦3,500 times quantity, fee on the total.
+**Pricing:** ₦3,500 per link. Payment fees are paid by the buyer, so the owner receives the full ₦3,500 per link. The bot tells buyers the price is "₦3,500 plus a small payment fee". Implementation: set the Bachs account's `fee_preference` to `customer_pays`, so Bachs adds the exact fee at checkout (NGN card 2%, NGN bank transfer 1.5%). If the account stays on `org_pays`, the bot adds the fee itself (gross-up, about ₦3,572 for one link at 2%) and shows the buyer the total before payment. Bulk orders: ₦3,500 times quantity, fee on the total.
 
 ## 6. Users
 
@@ -53,9 +53,9 @@ Two separate flows. The bot never moves money between them.
 1. Buyer messages the bot (for example "i want the gemini pro link", "how much", "i need 3").
 2. Bot replies briefly with price and what they get.
 3. Bot runs pre-sale checks (stock, reseller balance, quantity).
-4. Bot creates a Paystack transaction and sends the payment link with the exact amount.
+4. Bot creates a Bachs checkout and sends the payment link with the exact amount.
 5. Buyer pays.
-6. Paystack webhook confirms payment.
+6. Bachs webhook confirms payment.
 7. Bot buys the links from the reseller.
 8. Bot sends the link(s) with a short note.
 9. If anything fails after payment, bot tells the buyer it is being handled, gives the WhatsApp support number, and alerts the admin.
@@ -83,12 +83,12 @@ Two separate flows. The bot never moves money between them.
 - **No time cutoff by default.** Selling stops only when the reseller has no stock or balance is too low. An optional `SALES_CUTOFF` env var exists but is off.
 - One pending payment per user at a time.
 
-### 8.3 Payment (Paystack)
+### 8.3 Payment (Bachs)
 
-- Initialize an NGN transaction with a unique reference tied to our order id.
-- Payment link expires after a set window (default 15 minutes).
-- Webhook verifies the `x-paystack-signature` header (HMAC SHA512 with the secret key). Invalid signatures are rejected and logged.
-- On `charge.success`, also call Paystack's verify endpoint, and check amount, currency, and reference against the order before fulfilling.
+- Create an NGN checkout with a unique reference tied to our order id (card and bank transfer).
+- Payment link expires after a set window (default 15 minutes). A bank transfer already on its way can still complete it later, and is honored.
+- Webhook verifies the Bachs signature (HMAC SHA256 over timestamp and raw body, with the endpoint's signing secret). Invalid signatures are rejected, logged and alerted.
+- On `checkout.completed` or `collection.succeeded`, also fetch the checkout from Bachs, and check status, amount, currency, and reference against the order before fulfilling.
 - Idempotent: duplicate or replayed webhooks never cause a second purchase (unique constraint on reference plus an atomic status change from `paid` to `fulfilling`).
 
 ### 8.4 Fulfilment (reseller API)
@@ -125,9 +125,9 @@ For bulk orders, links are sent as a numbered list. The message also reminds buy
 | `supplier_purchase_pending` | poll order status |
 | `invalid_api_key` | pause sales, alert admin immediately |
 | Reseller timeout or 5xx | retry with backoff, verify order status before giving up |
-| Paystack amount mismatch | do not fulfil, alert admin |
+| Payment amount mismatch | do not fulfil, hold as `needs_attention`, alert admin |
 | Groq failure or rate limit | scripted fallback with buttons |
-| Render cold start | Paystack retries webhooks; reconciliation job catches anything missed |
+| Render cold start | Bachs retries webhooks; reconciliation job catches anything missed |
 
 ### 8.8 Admin features (owner only, by Telegram id allowlist)
 
@@ -148,12 +148,12 @@ Sent to three channels: the owner's email, his main Telegram account, and ntfy.s
 
 Side states: `expired` (unpaid), `partial` (some links delivered), `needs_attention`, `refunded`, `cancelled`.
 
-State changes are persisted before external calls. A reconciliation job runs on startup and on a timer, re-checking `awaiting_payment`, `paid`, `fulfilling`, and `partial` orders against Paystack and the reseller.
+State changes are persisted before external calls. A reconciliation job runs on startup and on a timer, re-checking `awaiting_payment`, `paid`, `fulfilling`, and `partial` orders against Bachs and the reseller.
 
 ## 10. Data (Neon Postgres)
 
 - **users:** telegram_user_id, username, first seen.
-- **orders:** id, telegram_user_id, quantity, status, amount_ngn, paystack_reference (unique), timestamps, error info.
+- **orders:** id, telegram_user_id, quantity, status, amount_ngn, payment_reference (unique), checkout_id, timestamps, error info.
 - **order_items:** order_id, index, reseller_order_code, activation_link, status.
 - **events:** webhook payloads and reseller responses with secrets redacted.
 - **messages:** short chat history per user (last 10 turns used for the LLM).
@@ -163,7 +163,7 @@ State changes are persisted before external calls. A reconciliation job runs on 
 - **Hosting:** Render free web service for the bot and webhook server, plus an uptime monitor pinging `/health` about every 10 minutes (Render free services sleep after 15 idle minutes). If sleeping causes missed sales, upgrade to the $7/month instance.
 - **Database:** Neon Postgres (not SQLite, because Render's free disk does not persist).
 - **Stack:** Node.js with TypeScript.
-- **Security:** all secrets in environment variables (Telegram token, Paystack secret, reseller API key, Groq key, SMTP or email key, ntfy topic). `.env` gitignored, `.env.example` committed. Admin allowlist by Telegram id.
+- **Security:** all secrets in environment variables (Telegram token, Bachs secret key and webhook secret, reseller API key, Groq key, SMTP or email key, ntfy topic). `.env` gitignored, `.env.example` committed. Admin allowlist by Telegram id.
 - **Logging:** structured logs with order id on every line, no secrets or links.
 - **Performance:** delivery within about 30 seconds of payment when the service is awake.
 - **Time zone:** user facing times in WAT (UTC+1).
@@ -183,7 +183,7 @@ State changes are persisted before external calls. A reconciliation job runs on 
 | Offer ends 29 Oct 2026 (Jio's terms, unless Jio changes it), likely around 19:30 WAT by India time | ship the core flow first; bot warns buyers to activate quickly; optional `SALES_CUTOFF` available |
 | Multi party chain (Google, Jio, upstream reseller, us), so links can fail or expire | clear buyer messaging, replacement flow, WhatsApp hot support, admin alerts |
 | Reseller balance runs out mid sales | pre-sale balance check, low balance alerts on three channels, "unavailable" state |
-| Render free tier sleeps | uptime monitor, Paystack webhook retries, reconciliation job, paid instance as fallback |
+| Render free tier sleeps | uptime monitor, Bachs webhook retries, reconciliation job, paid instance as fallback |
 | Groq outage or rate limit | model fallbacks, scripted button fallback |
 | Webhook spoofing or replay | signature check, verify API call, idempotency |
 | Bulk order partly fails | per item orders, partial delivery, retries, admin alert |
@@ -193,14 +193,14 @@ State changes are persisted before external calls. A reconciliation job runs on 
 
 1. Verify with one real buyer who already has a Google plan how activation behaves. The bot's answer about existing subscriptions follows the owner's description and should be checked.
 2. Alert email address (assumed hello@samkiel.dev).
-3. Whether Paystack's customer-bears-fees setting is available on the account (otherwise the bot grosses up the amount).
+3. Bachs `fee_preference`: `customer_pays` (Bachs adds the fee, `GROSS_UP=false`) or `org_pays` (the bot grosses up, `GROSS_UP=true`). The live account was on `org_pays` on 26 Oct.
 4. `MAX_QTY_PER_ORDER` (default 10).
 
 ## 15. Milestones
 
 | Date (WAT) | Milestone |
 |---|---|
-| Mon 26 Oct | PRD final, repo and Render service created, Neon database, bot skeleton, Paystack init and webhook in test mode |
+| Mon 26 Oct | PRD final, repo and Render service created, Neon database, bot skeleton, Bachs checkout and webhook in the sandbox |
 | Tue 27 Oct | reseller integration, bulk fulfilment, Groq chat, delivery, alerts, admin commands, end to end test |
 | Wed 28 Oct | live with real payments, small pilot, fix issues, update flyer and channel post to the bot link |
 | Thu 29 Oct | last day to claim; full push; watch balance and alerts |
@@ -208,5 +208,5 @@ State changes are persisted before external calls. A reconciliation job runs on 
 ## 16. Next steps
 
 1. Approve this PRD and add it to `docs/PRD.md` in the geminipro repo.
-2. Architecture doc: bot, webhook server, Paystack, reseller API, Neon, Groq, alerts.
+2. Architecture doc: bot, webhook server, Bachs, reseller API, Neon, Groq, alerts.
 3. Claude Code prompts, then implementation.
