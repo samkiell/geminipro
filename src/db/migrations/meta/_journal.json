@@ -8,6 +8,20 @@
       "when": 1792986811581,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792989102413,
+      "tag": "0001_bachs_checkout",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792989120910,
+      "tag": "0002_drop_paystack_reference",
+      "breakpoints": true
     }
   ]
 }
