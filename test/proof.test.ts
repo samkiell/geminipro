@@ -62,6 +62,15 @@ describe('proof screenshots', () => {
     expect(tg.albums[1]?.photos).toEqual([{ fileId: 'file-1' }, { fileId: 'file-2' }]);
   });
 
+  it('without the intro ([see proof]): only the album and what to do next', async () => {
+    await writeFile(join(dir, '1.jpg'), 'x');
+    await seedProof(testDb.db, dir);
+    expect(await proof().send(42, { intro: false })).toBe('sent');
+    expect(tg.sent.map((m) => m.text)).not.toContain(PROOF_INTRO);
+    expect(tg.albums).toHaveLength(1);
+    expect(tg.sent.at(-1)?.text).toBe('want one? tap below.');
+  });
+
   it('with no screenshots yet: an honest note, whatsapp support, and one alert per cooldown', async () => {
     const p = proof();
     expect(await p.send(42)).toBe('missing');

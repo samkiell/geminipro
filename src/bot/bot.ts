@@ -262,8 +262,9 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
         return;
       }
       case 'pf':
+        // [see proof]: just the screenshots and what to do next, no "is it real" speech.
         await port.answer(queryId);
-        await deps.proof.send(telegramId);
+        await deps.proof.send(telegramId, { intro: false });
         return;
       case 'inv':
         // From a delivery message: a new message, so the links stay. From the help hub: edit it.

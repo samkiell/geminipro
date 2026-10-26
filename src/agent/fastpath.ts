@@ -22,6 +22,13 @@ const BUY_ONE = /^(buy|buy now|buy one|buy a link|buy link|i want|i want one|i w
 const BUY_N = /^(?:buy|i want|i need) (\d{1,2})(?: links?)?$/;
 const HISTORY = /^(history|my orders?|orders|order history|my links?|my link please|where is my link|where's my link|wheres my link|my receipt)$/;
 const PROOF_WORDS = /\b(proof|real|legit|scam|scammer|trust|trusted|genuine|fake|original|does it work|is it working|is this working)\b/;
+// "see proof", "show me proof", "proof": a request to see the screenshots, not a question about
+// whether the shop is real, so the album comes without the "yes, the offer is real" text.
+const SEE_PROOF = /^(?:pls |please )?(?:(?:see|show|send|share|view|drop|give)(?: me| us)? )?(?:the |some |your |any )?(?:proofs?|screenshots?)(?: pls| please)?$/;
+
+export function isProofRequest(text: string): boolean {
+  return SEE_PROOF.test(normalize(text));
+}
 const HELP = /^(help|menu|options|commands|help me)$/;
 const INVITE = /^(invite|refer|referral|referrals|my referral link|referral link|invite link|invite friends|refer a friend|earn|free link)$/;
 const SUPPORT = /^(support|customer care|customer service|contact|contact support|whatsapp|agent|human|talk to a human|talk to someone|talk to a person)$/;

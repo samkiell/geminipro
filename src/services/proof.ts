@@ -76,7 +76,8 @@ export function createProof(deps: ProofDeps) {
   const after: Keyboard = [[{ text: 'buy now', data: cb.buy(1) }, supportButton(deps.facts, undefined, 'whatsapp support')]];
 
   /** The fixed text, the album, then what to do next. */
-  async function send(telegramId: number): Promise<'sent' | 'missing'> {
+  /** The album, then what to do next. With `intro` (a doubt question) the fixed honest text comes first. */
+  async function send(telegramId: number, { intro = true }: { intro?: boolean } = {}): Promise<'sent' | 'missing'> {
     const items = await activeProof(db);
     if (items.length === 0) {
       await port.send(telegramId, { text: PROOF_MISSING, keyboard: [[supportButton(deps.facts, undefined, 'whatsapp support')]] });
@@ -88,7 +89,7 @@ export function createProof(deps: ProofDeps) {
       });
       return 'missing';
     }
-    await port.send(telegramId, { text: PROOF_INTRO });
+    if (intro) await port.send(telegramId, { text: PROOF_INTRO });
     await sendAlbum(telegramId, items, PROOF_CAPTION);
     await port.send(telegramId, { text: PROOF_AFTER, keyboard: after });
     return 'sent';

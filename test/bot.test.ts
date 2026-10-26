@@ -41,6 +41,8 @@ let groq: MockGroq;
 let events: string[];
 let leads: string[];
 let proofSends: number[];
+/** Whether each proof send had the "yes, the offer is real" intro. */
+let proofIntros: boolean[];
 let alerts: Alert[];
 let fallbacks: string[];
 let updateId = 1;
@@ -60,6 +62,7 @@ beforeEach(async () => {
   events = [];
   leads = [];
   proofSends = [];
+  proofIntros = [];
   alerts = [];
   fallbacks = [];
   groq = await startMockGroq(() => events.push('model'));
@@ -107,8 +110,9 @@ function makeBot(overrides: Partial<BotDeps> = {}, brainOptions: { perUserPerMin
       ...brainOptions,
     }),
     proof: {
-      send: async (telegramId) => {
+      send: async (telegramId, options) => {
         proofSends.push(telegramId);
+        proofIntros.push(options?.intro ?? true);
         return 'sent';
       },
     },
@@ -253,7 +257,15 @@ describe('chat: one model call at most, often none', () => {
     await bot.handleUpdate(message('hello'));
     expect(modelCalls()).toBe(0);
     expect(proofSends).toEqual([BUYER]);
+    expect(proofIntros).toEqual([true]); // a doubt question gets the honest intro
     expect(tg.textsTo(BUYER)).toContain('one link is ₦3,500 + fee. it lands here about a minute after you pay.');
+
+    // [see proof] and a plain "see proof": the screenshots only, no intro.
+    await bot.handleUpdate(tap('pf', cardId));
+    await bot.handleUpdate(message('see proof'));
+    await bot.handleUpdate(message('Proof?'));
+    expect(proofIntros).toEqual([true, false, false, false]);
+    expect(modelCalls()).toBe(0);
   });
 
   it('every intent is carried out by code', async () => {

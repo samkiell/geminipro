@@ -1,3 +1,4 @@
+import { isProofRequest } from '../agent/fastpath.js';
 import type { Lang } from '../agent/buyer.js';
 import type { Decision } from '../agent/decide.js';
 import { fallbackButtons, isOwnerQuestion, isPurchaseRequest, scriptedTurn } from '../agent/fallback.js';
@@ -87,8 +88,9 @@ export function createResponder(deps: ResponderDeps) {
         return text;
       }
       case 'proof':
-        // Fixed, honest wording only: the model's reply is not used here.
-        await deps.proof.send(id);
+        // Fixed, honest wording only: the model's reply is not used here. "is this real" gets the
+        // honest intro first; a plain "see proof" just the screenshots.
+        await deps.proof.send(id, { intro: !isProofRequest(turn.userText) });
         return '[sent the proof screenshots]';
       case 'help':
         // UI intent: show only the help hub.
@@ -143,7 +145,7 @@ export function createResponder(deps: ResponderDeps) {
         await flows.showHelp(turn.telegramId, action.page);
         return `[showed help: ${action.page}]`;
       case 'proof':
-        await deps.proof.send(turn.telegramId);
+        await deps.proof.send(turn.telegramId, { intro: !isProofRequest(turn.userText) });
         return '[sent the proof screenshots]';
       case 'invite':
         await flows.showInvite(turn.telegramId);

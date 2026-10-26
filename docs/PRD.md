@@ -83,7 +83,7 @@ Two separate flows. The bot never moves money between them.
 - Purpose: skeptical buyers get real proof that the offer works.
 - Up to 10 real screenshots of activations from past buyers, emails, names and phone numbers blurred, never edited or generated. They live in `assets/proof/` (seeded into `proof_items` at boot) or are added by an admin with `/addproof` followed by the photos (or a photo captioned `/addproof`); `/proofs` lists them by id with a remove button each, `/delproof <id>` removes one for good.
 - Sent as one album with the caption "real activations from past buyers, personal details hidden", after this exact text: "yes, the offer is real. it is google's official 18 month ai pro offer with jio in india. samkiel gets the activation links through a supplier and resells them, so this shop is not run by google or jio. here are real activations from past buyers 👇". Then [buy now] [whatsapp support].
-- Triggered by "is this real", "proof", "legit", "scam" and similar (no model call), the `proof` intent, [see proof] on the order card and in /help.
+- Triggered by "is this real", "proof", "legit", "scam" and similar (no model call), the `proof` intent, [see proof] on the order card and in /help. A doubt question ("is this real", "legit?", "scam?") gets the text above first; [see proof] and a plain "proof" or "see proof" get only the album and [buy now] [whatsapp support].
 - Honesty: the bot never claims the shop is official or affiliated with Google or Jio, and never claims anything the screenshots do not show.
 
 ### 8.2 Pre-sale checks (before issuing a payment link)
