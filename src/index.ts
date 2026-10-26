@@ -2,10 +2,13 @@ import { autoRetry } from '@grammyjs/auto-retry';
 import { Bot } from 'grammy';
 import Groq from 'groq-sdk';
 import { createAgentActions } from './agent/actions.js';
+import { writeNudge } from './agent/agent.js';
 import { groqTransport, ModelPool } from './agent/llm.js';
+import { sendPaymentNudges } from './agent/nudge.js';
 import { promptFacts } from './agent/prompt.js';
 import { createTools } from './agent/tools.js';
 import { createAgentTurn } from './agent/turn.js';
+import { registerAdmin } from './bot/admin.js';
 import { registerBot } from './bot/bot.js';
 import { createFlows } from './bot/flows.js';
 import { grammyPort } from './bot/telegram.js';
@@ -16,9 +19,11 @@ import { buildServer } from './server.js';
 import { BachsClient, BachsProvider } from './services/bachs.js';
 import { createFulfilment } from './services/fulfilment.js';
 import { saveLead } from './services/leads.js';
-import { logNotifier, type Notify } from './services/notifier.js';
+import { createNotifier, type Notify } from './services/notifier.js';
 import { PAYMENT_WINDOW_MINUTES } from './services/orders.js';
 import { pricingFromConfig } from './services/pricing.js';
+import { createReconciler } from './services/reconciler.js';
+import { sendActivationReminders } from './services/reminders.js';
 import { createResellerClient } from './services/reseller.js';
 import { createLogger, type Logger } from './util/logger.js';
 import { withTimeout } from './util/time.js';
@@ -55,12 +60,21 @@ async function main(): Promise<void> {
 
   if (config.RESELLER_MOCK && config.NODE_ENV === 'development') await startDevMockReseller(config, logger);
 
-  const notify = logNotifier(logger);
-
   // One Bot API client for everything we send: timeouts, and Telegram's own 429s retried.
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN, { client: { timeoutSeconds: 15 } });
   bot.api.config.use(autoRetry({ maxRetryAttempts: 2, maxDelaySeconds: 10 }));
   const port = grammyPort(bot.api);
+
+  const notify = createNotifier({
+    logger,
+    db,
+    port,
+    adminIds: config.ADMIN_TELEGRAM_IDS,
+    alertEmail: config.ALERT_EMAIL,
+    alertEmailFrom: config.ALERT_EMAIL_FROM,
+    resendApiKey: config.RESEND_API_KEY,
+    ntfyTopic: config.NTFY_TOPIC,
+  });
 
   const facts: UiFacts = {
     unitPriceNgn: config.UNIT_PRICE_NGN,
@@ -126,6 +140,19 @@ async function main(): Promise<void> {
     facts,
     agent: createAgentTurn({ db, pool, tools, facts: promptFacts(config), logger }),
     saveLead: (telegramId, username, summary) => saveLead(db, notify, { telegramId, username, summary }),
+    notify,
+    registerAdmin: (b) =>
+      registerAdmin(b, {
+        db,
+        port,
+        logger,
+        facts,
+        adminIds: config.ADMIN_TELEGRAM_IDS,
+        reseller,
+        productId: config.RESELLER_PRODUCT_ID,
+        flows,
+        notify,
+      }),
   });
   try {
     await withTimeout(bot.init(), 15_000, 'telegram getMe');
@@ -153,12 +180,28 @@ async function main(): Promise<void> {
     ...(!polling && { telegram: { bot, secretToken: config.TELEGRAM_WEBHOOK_SECRET } }),
   });
 
+  const reconciler = createReconciler({
+    db,
+    logger,
+    notify,
+    flows,
+    fulfil: (orderId) => fulfilment.fulfil(orderId),
+    payments,
+    reseller,
+    productId: config.RESELLER_PRODUCT_ID,
+    lowBalanceLinks: config.LOW_BALANCE_ORDERS,
+    sendNudges: () => sendPaymentNudges({ db, port, facts, logger, write: (order) => writeNudge(pool, order) }),
+    sendReminders: () => sendActivationReminders({ db, port, logger, delayMinutes: config.REMINDER_DELAY_MINUTES }),
+  });
+
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     logger.info({ signal }, 'shutting down');
     try {
+      reconciler.stop();
       if (polling) await bot.stop();
       await app.close();
       await flows.whenIdle();
+      await notify.settled();
       await database.close();
     } finally {
       process.exit(0);
@@ -173,11 +216,19 @@ async function main(): Promise<void> {
       .start({ onStart: () => logger.info('telegram long polling started (development)') })
       .catch((err: unknown) => logger.error({ err: (err as Error).message }, 'telegram polling stopped'));
   }
+  reconciler.start();
+  notify({
+    level: 'info',
+    title: 'service started',
+    body: `The bot (re)started${config.RESELLER_MOCK ? ' in sandbox mode' : ''}. Anything missed while it was down is being caught up.`,
+    cooldownKey: 'boot',
+  });
   if (!payments.webhookConfigured) {
     notify({
       level: 'warning',
       title: 'payment webhooks are off',
       body: 'BACHS_WEBHOOK_SECRET is not set, so Bachs webhooks get 503 and no order can be marked paid.',
+      cooldownKey: 'webhooks_off',
     });
   }
   void checkFeeSetup(payments, config, notify, logger);
@@ -193,6 +244,7 @@ async function checkFeeSetup(payments: BachsProvider, config: Config, notify: No
         level: 'warning',
         title: 'payment fees are coming out of revenue',
         body: 'Bachs fee_preference is org_pays and GROSS_UP=false. Set customer_pays in the Bachs dashboard, or GROSS_UP=true.',
+        cooldownKey: 'fees',
       });
     }
     if (config.GROSS_UP && preference === 'customer_pays') {
@@ -200,6 +252,7 @@ async function checkFeeSetup(payments: BachsProvider, config: Config, notify: No
         level: 'critical',
         title: 'buyers are charged the fee twice',
         body: 'Bachs fee_preference is customer_pays and GROSS_UP=true. Set GROSS_UP=false.',
+        cooldownKey: 'fees',
       });
     }
   } catch (err) {
