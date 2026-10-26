@@ -1,9 +1,10 @@
 import { and, eq, isNotNull, sql } from 'drizzle-orm';
+import type { TelegramPort } from '../bot/telegram.js';
+import { payLabel, type UiFacts } from '../bot/views.js';
 import type { Db } from '../db/client.js';
 import { orders } from '../db/schema.js';
 import type { Logger } from '../util/logger.js';
 import { saveTurn } from './history.js';
-import type { PayButton } from './tools.js';
 
 // Abandoned payment nudge (docs/ARCHITECTURE.md 5.3): one short follow up about 10 minutes after a
 // payment link was issued and not paid, then never again for that order. Run by the reconciler.
@@ -12,8 +13,8 @@ export const NUDGE_AFTER_MINUTES = 10;
 
 export interface NudgeDeps {
   db: Db;
-  /** Sends the text with the order's pay now button. */
-  send: (chatId: number, text: string, button: PayButton) => Promise<void>;
+  port: TelegramPort;
+  facts: UiFacts;
   write: (order: { quantity: number; totalNgn: number; minutesLeft: number }) => Promise<string>;
   logger: Logger;
 }
@@ -47,11 +48,10 @@ export async function sendPaymentNudges(deps: NudgeDeps): Promise<number> {
     const minutesLeft = Math.max(1, Math.floor((claimed.expiresAt.getTime() - Date.now()) / 60_000));
     const text = await deps.write({ quantity: claimed.quantity, totalNgn: claimed.amountNgn, minutesLeft });
     try {
-      await deps.send(claimed.telegramId, text, {
-        orderId: claimed.id,
-        url: claimed.checkoutUrl,
-        quantity: claimed.quantity,
-        totalNgn: claimed.amountNgn,
+      // A plain link button: its job ends with the payment window, so nothing to retire later.
+      await deps.port.send(claimed.telegramId, {
+        text,
+        keyboard: [[{ text: `pay ${payLabel(claimed, deps.facts)}`, url: claimed.checkoutUrl }]],
       });
       await saveTurn(db, claimed.telegramId, 'assistant', text);
       sent++;
