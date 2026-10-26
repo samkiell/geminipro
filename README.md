@@ -53,7 +53,8 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 | `pnpm test` | vitest |
 | `pnpm db:generate` | generate a new SQL migration after editing `src/db/schema.ts` |
 | `pnpm db:migrate` | apply pending migrations |
-| `pnpm mock:reseller` | run the mock reseller API on port 4010 (used when `RESELLER_MOCK=true`) |
+| `pnpm mock:reseller` | run the mock reseller API on port 4010 (`pnpm dev` already starts it when `RESELLER_MOCK=true`) |
+| `pnpm order:test [qty] [telegramId]` | sandbox only: create an order and print its Bachs checkout link; `--cancel` cancels it |
 
 ## Test mode and live mode
 
