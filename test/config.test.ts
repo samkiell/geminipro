@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigError, loadConfig } from '../src/config.js';
 
-const validEnv = {
+const requiredEnv = {
   PUBLIC_URL: 'https://geminipro.onrender.com',
   TELEGRAM_BOT_TOKEN: '123456789:AAEexampleexampleexampleexample_ab',
   TELEGRAM_WEBHOOK_SECRET: 'a'.repeat(32),
@@ -13,6 +13,9 @@ const validEnv = {
   DATABASE_URL: 'postgresql://u:p@localhost:5432/db?sslmode=require',
   NTFY_TOPIC: 'samkiel-alerts',
 };
+
+// A Paystack test key must be paired with the mock reseller.
+const validEnv = { ...requiredEnv, RESELLER_MOCK: 'true' };
 
 function configError(env: Record<string, string>): string {
   try {
@@ -35,8 +38,8 @@ describe('loadConfig', () => {
     expect(config.GROSS_UP).toBe(true);
     expect(config.FEE_PCT).toBe(0.015);
     expect(config.FEE_FLAT).toBe(100);
-    expect(config.RESELLER_MOCK).toBe(false);
     expect(config.RESELLER_BASE_URL).toBe('https://api-geminipro.ignorelist.com/api/reseller/v1');
+    expect(config.RESELLER_MOCK_URL).toBe('http://127.0.0.1:4010/api/reseller/v1');
     expect(config.GROQ_MODEL).toBe('openai/gpt-oss-120b');
     expect(config.GROQ_FALLBACK_MODELS).toEqual([]);
     expect(config.SUPPORT_WHATSAPP).toBe('08087357158');
@@ -48,7 +51,6 @@ describe('loadConfig', () => {
     const config = loadConfig({
       ...validEnv,
       GROSS_UP: 'false',
-      RESELLER_MOCK: 'true',
       GROQ_FALLBACK_MODELS: 'a, b ,,c',
       SALES_CUTOFF: '2026-10-29T19:30:00+01:00',
     });
@@ -68,7 +70,7 @@ describe('loadConfig', () => {
 
   it('lists every missing required variable', () => {
     const message = configError({});
-    for (const key of Object.keys(validEnv)) {
+    for (const key of Object.keys(requiredEnv)) {
       expect(message).toContain(`${key}: is required but not set`);
     }
   });
@@ -84,5 +86,19 @@ describe('loadConfig', () => {
     expect(message).toContain('GROSS_UP: expected true or false');
     expect(message).toContain('ADMIN_TELEGRAM_IDS');
     expect(message).not.toContain('pk_test_publickey');
+  });
+
+  it('refuses a Paystack test key with the real reseller', () => {
+    const message = configError({ ...requiredEnv, RESELLER_MOCK: 'false' });
+    expect(message).toContain('RESELLER_MOCK: must be true with a Paystack test key');
+    expect(configError(requiredEnv)).toContain('RESELLER_MOCK: must be true');
+  });
+
+  it('refuses a live Paystack key with the mock reseller', () => {
+    const live = { ...requiredEnv, PAYSTACK_SECRET_KEY: 'sk_live_abc123' };
+    expect(configError({ ...live, RESELLER_MOCK: 'true' })).toContain(
+      'RESELLER_MOCK: must be false with a live Paystack key',
+    );
+    expect(loadConfig(live).RESELLER_MOCK).toBe(false);
   });
 });
