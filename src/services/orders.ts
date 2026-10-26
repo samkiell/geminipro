@@ -497,7 +497,7 @@ export async function deleteOrderDraft(db: Db, telegramId: number): Promise<void
 export async function deleteOldOrderDrafts(db: Db, olderThan: Date): Promise<number> {
   const deleted = await db
     .delete(orderDrafts)
-    .where(sql`${orderDrafts.updatedAt} < ${olderThan}`)
+    .where(sql`${orderDrafts.updatedAt} < ${olderThan.toISOString()}::timestamptz`)
     .returning({ telegramId: orderDrafts.telegramId });
   return deleted.length;
 }
