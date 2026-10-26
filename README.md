@@ -153,6 +153,7 @@ The offer line ("offer ending very soon") is a setting, not code: change it with
 Every alert goes out at once to email (Resend, from `ALERT_EMAIL_FROM` to `ALERT_EMAIL`), to each admin's Telegram chat, and to the ntfy topic in `NTFY_TOPIC` (install the ntfy app and subscribe to it). A channel that fails is logged and the others still go. Alerts never contain a link.
 
 - **Always, per order**: a paid order that could not be fulfilled, a payment held for review.
+- **Any error or crash in production**, within seconds: every line logged at error level (failed reconciler steps, request errors, database unreachable, unhandled rejections, crashes) becomes an alert with its message, context and cause. The same error comes at most once per 30 minutes, with a count of its repeats, and at most 10 error alerts per 30 minutes. Never in development.
 - **At most once per 30 minutes per trigger** (remembered across restarts): low stock, low reseller balance (fewer than `LOW_BALANCE_ORDERS` links left), reseller key rejected, bad webhook signatures, more than 5 scripted replies in 5 minutes (Groq rate limited), no proof screenshots yet, fee setup mismatch, service restarted.
 - **Daily summary at 21:00 WAT**: today's orders, links and revenue, failures, the reseller balance and stock, referrals (friends qualified, free links granted and what they cost).
 - **Also**: channel gate check failing (failed open), free referral links waiting on a pause or on stock.

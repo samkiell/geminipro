@@ -17,6 +17,7 @@ import { createDb } from './db/client.js';
 import { startMockReseller } from './dev/mock-reseller.js';
 import { buildServer } from './server.js';
 import { BachsClient, BachsProvider } from './services/bachs.js';
+import { createErrorAlerts } from './services/error-alerts.js';
 import { createFulfilment } from './services/fulfilment.js';
 import { saveLead } from './services/leads.js';
 import { createNotifier, type Notify } from './services/notifier.js';
@@ -50,9 +51,18 @@ function readConfig(): Config {
 
 async function main(): Promise<void> {
   const config = readConfig();
+  // In production every error and crash also goes to the owner's Telegram, email and ntfy.
+  const errorAlerts = createErrorAlerts();
   const logger = createLogger({
     level: config.NODE_ENV === 'production' ? 'info' : 'debug',
     pretty: config.NODE_ENV === 'development',
+    ...(config.NODE_ENV === 'production' && { errorStream: errorAlerts.stream }),
+  });
+  // Logged (and so alerted) instead of crashing the bot.
+  process.on('unhandledRejection', (reason) => logger.error({ err: reason }, 'unhandled promise rejection'));
+  process.on('uncaughtException', (err) => {
+    logger.fatal({ err }, 'uncaught exception, restarting');
+    void errorAlerts.flush().finally(() => process.exit(1));
   });
   // The count only, never the ids. Without admins, /admin and friends answer "i don't know that command".
   const adminCount = config.ADMIN_TELEGRAM_IDS.length;
@@ -106,6 +116,7 @@ async function main(): Promise<void> {
     ntfyTopic: config.NTFY_TOPIC,
     ...(config.NTFY_SERVER && { ntfyServer: config.NTFY_SERVER.replace(/\/+$/, '') }),
   });
+  errorAlerts.attach(notify);
 
   const facts: UiFacts = {
     unitPriceNgn: config.UNIT_PRICE_NGN,

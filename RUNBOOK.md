@@ -18,6 +18,8 @@ Short answers for running the shop. Admin commands work only in an admin's own c
 
 Alerts arrive by email, in your Telegram chat with the bot, and on ntfy, all at once (see the README for the list). The same system alert (low balance, rate limits...) comes at most once every 30 minutes, so silence after an alert does not mean it is fixed: check with `/balance` or `/stats`. Order alerts come every time. The daily summary arrives at 21:00 WAT.
 
+Errors and crashes in production arrive the same way, titled `error: ...` or `crash: ...`, with what failed and why. The same error repeats at most every 30 minutes (with a count). The full log is in the Render dashboard (Logs).
+
 ## How sales are going
 
 `/stats` shows today and all time (orders, links, revenue; free referral links are not counted as sales), plus failures, orders in progress, orders waiting for payment, how many delivered links buyers have marked activated, and referrals (friends qualified, free links granted, their cost at the current reseller price). `/leads` lists the latest people who asked samkiel to build something.
