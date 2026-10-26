@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { orderItems, orders, users, type Order, type OrderStatus } from '../db/schema.js';
+import { orderItems, orders, users, type Order, type OrderItem, type OrderStatus } from '../db/schema.js';
 import type { PaymentProvider } from './payments.js';
 import { priceFor, type Price, type PricingConfig } from './pricing.js';
 import type { ResellerClient } from './reseller.js';
@@ -11,6 +11,9 @@ import { isPaused } from './settings.js';
 // expected state, so concurrent webhooks, retries and the reconciler cannot double-apply it.
 
 export const PAYMENT_WINDOW_MINUTES = 15;
+
+// Ids that come back from buttons are checked before they reach a query.
+const UUID = /^[0-9a-f-]{36}$/i;
 
 /**
  * Orders a payment can still settle. A payment that lands after expiry or after the buyer
@@ -274,7 +277,7 @@ export async function finishFulfilment(
 
 /** An order of this buyer, or nothing. Ids from buttons are never trusted on their own. */
 export async function findOwnOrder(db: Db, telegramId: number, orderId: string): Promise<Order | undefined> {
-  if (!/^[0-9a-f-]{36}$/i.test(orderId)) return undefined;
+  if (!UUID.test(orderId)) return undefined;
   const [order] = await db
     .select()
     .from(orders)
@@ -331,13 +334,105 @@ export async function countPastOrders(db: Db, telegramId: number): Promise<numbe
 }
 
 /** Links already sent to the buyer, in order. Sensitive: never log them. */
-export async function deliveredLinks(db: Db, orderId: string): Promise<{ number: number; link: string }[]> {
+/** A link as the buyer sees it: open (tap to copy) or closed once they marked it activated. */
+export interface ShownLink {
+  itemId: string;
+  /** 1-based position in the order; replacements come after the ordered quantity. */
+  number: number;
+  link: string;
+  activatedAt: Date | null;
+}
+
+const shownLink = {
+  itemId: orderItems.id,
+  idx: orderItems.idx,
+  link: orderItems.activationLink,
+  activatedAt: orderItems.activatedAt,
+};
+const toShown = (r: { itemId: string; idx: number; link: string | null; activatedAt: Date | null }): ShownLink => ({
+  itemId: r.itemId,
+  number: r.idx + 1,
+  link: r.link as string,
+  activatedAt: r.activatedAt,
+});
+
+/** Every link of the order the buyer has received, closed ones included. */
+export async function deliveredLinks(db: Db, orderId: string): Promise<ShownLink[]> {
   const rows = await db
-    .select({ idx: orderItems.idx, link: orderItems.activationLink })
+    .select(shownLink)
     .from(orderItems)
     .where(and(eq(orderItems.orderId, orderId), isNotNull(orderItems.deliveredAt), isNotNull(orderItems.activationLink)))
     .orderBy(orderItems.idx);
-  return rows.map((r) => ({ number: r.idx + 1, link: r.link as string }));
+  return rows.map(toShown);
+}
+
+/** The links one buyer chat message shows. */
+export async function linksInMessage(db: Db, orderId: string, messageId: number): Promise<ShownLink[]> {
+  const rows = await db
+    .select(shownLink)
+    .from(orderItems)
+    .where(
+      and(
+        eq(orderItems.orderId, orderId),
+        isNotNull(orderItems.activationLink),
+        sql`${orderItems.messageIds} @> array[${messageId}::integer]`,
+      ),
+    )
+    .orderBy(orderItems.idx);
+  return rows.map(toShown);
+}
+
+/** Telegram accepted a buyer message carrying these links: they are delivered, and shown there. */
+export async function recordLinkMessage(db: Db, itemIds: string[], messageId: number): Promise<void> {
+  if (itemIds.length === 0) return;
+  await db
+    .update(orderItems)
+    .set({
+      deliveredAt: sql`coalesce(${orderItems.deliveredAt}, now())`,
+      messageIds: sql`array_append(${orderItems.messageIds}, ${messageId}::integer)`,
+    })
+    .where(inArray(orderItems.id, itemIds));
+}
+
+/** A link of this buyer's, with its order. Undefined if it is not theirs or was never delivered. */
+export async function findOwnLink(
+  db: Db,
+  telegramId: number,
+  itemId: string,
+): Promise<{ item: OrderItem; order: Order } | undefined> {
+  if (!UUID.test(itemId)) return undefined;
+  const [row] = await db
+    .select({ item: orderItems, order: orders })
+    .from(orderItems)
+    .innerJoin(orders, eq(orders.id, orderItems.orderId))
+    .where(and(eq(orderItems.id, itemId), eq(orders.telegramId, telegramId), isNotNull(orderItems.deliveredAt)));
+  return row;
+}
+
+/**
+ * The buyer activated these links (all of the order's when no ids are given): they are closed for
+ * good. Once as many links are activated as were ordered, the order counts as activated.
+ * Returns the links closed by this call, with the messages that show them.
+ */
+export async function closeLinks(db: Db, orderId: string, itemIds?: string[]): Promise<{ id: string; messageIds: number[] }[]> {
+  const conditions = [eq(orderItems.orderId, orderId), isNotNull(orderItems.deliveredAt), isNull(orderItems.activatedAt)];
+  if (itemIds) conditions.push(inArray(orderItems.id, itemIds));
+  const closed = await db
+    .update(orderItems)
+    .set({ activatedAt: sql`now()` })
+    .where(and(...conditions))
+    .returning({ id: orderItems.id, messageIds: orderItems.messageIds });
+  await db
+    .update(orders)
+    .set({ activatedConfirmedAt: sql`now()` })
+    .where(
+      and(
+        eq(orders.id, orderId),
+        isNull(orders.activatedConfirmedAt),
+        sql`(select count(*) from ${orderItems} where ${orderItems.orderId} = ${orderId} and ${orderItems.activatedAt} is not null) >= ${orders.quantity}`,
+      ),
+    );
+  return closed;
 }
 
 export async function setOrderMessages(

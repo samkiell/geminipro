@@ -90,9 +90,10 @@ describe('fulfil', () => {
         `<code>${item?.activationLink}</code>`,
         "open the browser where you're already signed in to the google account you want it on, paste the link and activate it.",
         '⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.',
+        "once it's activated, tap ✅ below and i'll close it here.",
       ].join('\n'),
     );
-    expect(tg.buttons(message?.id).map((b) => b.text)).toEqual(['need help on whatsapp', 'my orders']);
+    expect(tg.buttons(message?.id).map((b) => b.text)).toEqual(["✅ i've activated it", 'need help on whatsapp', 'my orders']);
     expect(mock.state.orders).toHaveLength(1);
     // claimed, then delivered: the status message is refreshed both times
     expect(changed).toEqual([id, id]);
@@ -168,7 +169,7 @@ describe('fulfil', () => {
     expect(linksIn(tg.sent[0]?.text)).toHaveLength(2);
   });
 
-  it('splits many links over several messages under the Telegram limit, buttons on the last only', async () => {
+  it('splits many links over several messages under the Telegram limit, each link button with its link', async () => {
     const id = await insertOrder(testDb.db, { quantity: 10 });
     // Long links push the order past 4096 characters.
     await testDb.db.insert(orderItems).values(
@@ -184,9 +185,18 @@ describe('fulfil', () => {
     expect(tg.sent.length).toBeGreaterThan(1);
     for (const m of tg.sent) expect(m.text.length).toBeLessThanOrEqual(4096);
     expect(tg.sent.flatMap((m) => m.text.match(/link \d+ of 10/g) ?? [])).toHaveLength(10);
-    expect(tg.sent.slice(0, -1).every((m) => !m.keyboard)).toBe(true);
-    expect(tg.sent.at(-1)?.keyboard).toBeDefined();
-    expect((await getItems(testDb.db, id)).every((i) => i.deliveredAt)).toBe(true);
+    // Every message carries the ✅ buttons of exactly the links it shows; support goes on the last.
+    for (const m of tg.sent) {
+      const shown = (m.text.match(/link (\d+) of 10/g) ?? []).map((s) => s.replace(' of 10', ''));
+      const taps = tg.buttons(m.id).filter((b) => b.text.startsWith('✅')).map((b) => b.text.replace(/^✅ | activated$/g, ''));
+      expect(taps).toEqual(shown);
+    }
+    expect(tg.sent.slice(0, -1).every((m) => !tg.buttons(m.id).some((b) => b.text === 'my orders'))).toBe(true);
+    expect(tg.buttons(tg.sent.at(-1)?.id).map((b) => b.text)).toContain('my orders');
+    const items = await getItems(testDb.db, id);
+    expect(items.every((i) => i.deliveredAt)).toBe(true);
+    // ...and each link remembers the one message that shows it
+    expect(items.every((i) => i.messageIds.length === 1 && tg.get(i.messageIds[0])?.text.includes(`link ${i.idx + 1} of 10`))).toBe(true);
   });
 
   it('escapes html in links', async () => {

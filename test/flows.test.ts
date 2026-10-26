@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFlows, type FlowDeps } from '../src/bot/flows.js';
-import { orders } from '../src/db/schema.js';
+import { orderItems, orders } from '../src/db/schema.js';
 import { buildServer } from '../src/server.js';
 import { verifyWebhookSignature, type CheckoutSession, type CreateCheckoutInput } from '../src/services/bachs.js';
 import { createFulfilment } from '../src/services/fulfilment.js';
@@ -12,7 +12,7 @@ import { computeAvailability, ResellerClient } from '../src/services/reseller.js
 import { setOfferText } from '../src/services/settings.js';
 import { createLogger } from '../src/util/logger.js';
 import { createTestDb } from './helpers/db.js';
-import { getOrder, insertOrder } from './helpers/orders.js';
+import { getItems, getOrder, insertOrder } from './helpers/orders.js';
 import { facts, fakePort, type FakePort } from './helpers/telegram.js';
 import { startMockReseller, type MockReseller } from './mocks/reseller-server.js';
 
@@ -322,7 +322,13 @@ describe('acceptance: buy 3, pay, receive tap-to-copy links, find them in histor
     const delivery = tg.sent.find((m) => m.text.startsWith('payment confirmed ✅'));
     expect(delivery?.text.match(/<code>https:\/\/mock-reseller\.local\/activate\/[0-9a-f]+<\/code>/g)).toHaveLength(3);
     expect(delivery?.text).toContain('link 3 of 3');
-    expect(tg.buttons(delivery?.id).map((b) => b.text)).toEqual(['need help on whatsapp', 'my orders']);
+    expect(tg.buttons(delivery?.id).map((b) => b.text)).toEqual([
+      '✅ link 1 activated',
+      '✅ link 2 activated',
+      '✅ link 3 activated',
+      'need help on whatsapp',
+      'my orders',
+    ]);
 
     // the card lost its buttons, the status message became the receipt
     expect(tg.get(cardId)).toMatchObject({ text: `paid ✅ order ${order?.orderNo}` });
@@ -338,7 +344,88 @@ describe('acceptance: buy 3, pay, receive tap-to-copy links, find them in histor
     await f.showOrder(BUYER, order?.id ?? '', 1, historyId);
     expect(tg.buttons(historyId).map((b) => b.text)).toContain('show my links');
     expect(await f.showLinks(BUYER, order?.id ?? '')).toBe('sent');
-    expect(tg.sent.at(-1)?.text).toContain(`order ${order?.orderNo}\nyour links, tap to copy:`);
+    const again = tg.sent.at(-1);
+    expect(again?.text).toContain(`order ${order?.orderNo}\nyour links, tap to copy:`);
+
+    // last step: the buyer marks link 1 activated, confirms, and it is closed wherever it was shown
+    const [first] = await getItems(testDb.db, order?.id ?? '');
+    const deliveryId = delivery?.id ?? 0;
+    expect(await f.activationTap(BUYER, deliveryId, first?.id ?? '', 'ask')).toBe(true);
+    expect(tg.buttons(deliveryId).map((b) => b.text)).toEqual(['yes, link 1 is activated. close it', 'not yet']);
+    expect(await f.activationTap(BUYER, deliveryId, first?.id ?? '', 'yes')).toBe(true);
+    for (const id of [deliveryId, again?.id]) {
+      expect(tg.get(id)?.text).toContain('link 1 of 3: activated ✅');
+      expect(tg.get(id)?.text).not.toContain(first?.activationLink ?? 'none');
+    }
+    expect(tg.buttons(deliveryId).map((b) => b.text)).toEqual(['✅ link 2 activated', '✅ link 3 activated', 'need help on whatsapp', 'my orders']);
     expect(alerts).toEqual([]);
+  });
+});
+
+describe('activation', () => {
+  async function deliveredOrder(quantity: number) {
+    const id = await insertOrder(testDb.db, { status: 'delivered', telegramId: BUYER, quantity });
+    await testDb.db.insert(orderItems).values(
+      Array.from({ length: quantity }, (_, idx) => ({
+        orderId: id,
+        idx,
+        idempotencyKey: `${id}-${idx}`,
+        status: 'completed' as const,
+        activationLink: `https://one.google.com/activate/${idx}`,
+        deliveredAt: new Date(),
+      })),
+    );
+    return { id, items: await getItems(testDb.db, id) };
+  }
+
+  it('activating every link closes them, marks the order activated and stops showing them', async () => {
+    const { id, items } = await deliveredOrder(2);
+    const f = flows();
+    expect(await f.showLinks(BUYER, id)).toBe('sent');
+    const msg = tg.sent.at(-1)?.id ?? 0;
+
+    // "not yet" puts the buttons back and closes nothing
+    await f.activationTap(BUYER, msg, items[0]?.id ?? '', 'ask');
+    await f.activationTap(BUYER, msg, items[0]?.id ?? '', 'no');
+    expect(tg.buttons(msg).map((b) => b.text)).toEqual(['✅ link 1 activated', '✅ link 2 activated', 'need help on whatsapp', 'my orders']);
+    expect((await getItems(testDb.db, id)).every((i) => i.activatedAt === null)).toBe(true);
+
+    for (const item of items) await f.activationTap(BUYER, msg, item.id, 'yes');
+    expect(tg.get(msg)?.text).toContain('these links are activated ✅');
+    expect(tg.get(msg)?.text).not.toContain('https://');
+    expect(tg.buttons(msg).map((b) => b.text)).toEqual(['need help on whatsapp', 'my orders']);
+    expect((await getOrder(testDb.db, id)).activatedConfirmedAt).toBeInstanceOf(Date);
+
+    // closed for good: not in "show my links", not on the order card
+    expect(await f.showLinks(BUYER, id)).toBe('closed');
+    expect(tg.sent.at(-1)?.text).toContain("is activated, so they're closed");
+    await f.showOrder(BUYER, id, 1);
+    expect(tg.buttons(tg.sent.at(-1)?.id).map((b) => b.text)).not.toContain('show my links');
+    expect(tg.sent.at(-1)?.text).toContain('activated: 2 links ✅ (closed)');
+  });
+
+  it('a tap twice closes once, and nobody else can close a buyer link', async () => {
+    const { id, items } = await deliveredOrder(1);
+    const f = flows();
+    await f.showLinks(BUYER, id);
+    const msg = tg.sent.at(-1)?.id ?? 0;
+    expect(await f.activationTap(7, msg, items[0]?.id ?? '', 'yes')).toBe(false);
+    expect(await f.activationTap(BUYER, msg, 'not-a-uuid', 'yes')).toBe(false);
+    await f.activationTap(BUYER, msg, items[0]?.id ?? '', 'yes');
+    const at = (await getItems(testDb.db, id))[0]?.activatedAt;
+    await f.activationTap(BUYER, msg, items[0]?.id ?? '', 'yes');
+    expect((await getItems(testDb.db, id))[0]?.activatedAt).toEqual(at);
+    expect(tg.get(msg)?.text).toContain('activated ✅');
+  });
+
+  it('yes on the reminder closes every link of the order', async () => {
+    const { id } = await deliveredOrder(1);
+    const f = flows();
+    await f.showLinks(BUYER, id);
+    const linksMsg = tg.sent.at(-1)?.id ?? 0;
+    const reminder = await tg.port.send(BUYER, { text: 'did you activate your link?' });
+    await f.answerActivation(BUYER, reminder, id, 'yes', 'sam');
+    expect(tg.get(linksMsg)?.text).not.toContain('https://');
+    expect((await getItems(testDb.db, id))[0]?.activatedAt).toBeInstanceOf(Date);
   });
 });

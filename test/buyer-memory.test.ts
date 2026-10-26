@@ -101,7 +101,7 @@ describe('reminders and nudges', () => {
     const day = new Date('2026-10-26T13:00:00Z');
     expect(await sendActivationReminders({ db: testDb.db, port: tg.port, logger, delayMinutes: 180, now: day })).toBe(1);
     expect(await sendActivationReminders({ db: testDb.db, port: tg.port, logger, delayMinutes: 180, now: day })).toBe(0);
-    expect(tg.sent[0]?.text).toMatch(/^did you activate your link\? order GP-\d+$/);
+    expect(tg.sent[0]?.text).toMatch(/^did you activate your link\? order GP-\d+\nif yes, tap below and i'll close it here\.$/);
     expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['yes, activated ✅', 'i need help']);
   });
 

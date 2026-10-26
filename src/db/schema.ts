@@ -117,6 +117,10 @@ export const orderItems = pgTable(
     error: text('error'),
     // Set once Telegram accepted a message containing this link.
     deliveredAt: timestamptz('delivered_at'),
+    // The buyer tapped "i've activated it": the link is closed and never shown again.
+    activatedAt: timestamptz('activated_at'),
+    // Buyer chat messages that show this link, so closing it can edit every one of them.
+    messageIds: integer('message_ids').array().notNull().default(sql`'{}'::integer[]`),
   },
   (t) => [unique('order_items_order_id_idx_unique').on(t.orderId, t.idx)],
 );

@@ -6,14 +6,18 @@ import type { Notify } from '../services/notifier.js';
 import {
   cancelOwnOrder,
   cancelPendingOrder,
+  closeLinks,
   createOrder,
   deliveredLinks,
   expireUnpaidOrders,
+  findOwnLink,
   findOwnOrder,
   findOwnOrderByNo,
   findPendingOrder,
   historyPage,
+  linksInMessage,
   PAYMENT_WINDOW_MINUTES,
+  recordLinkMessage,
   reservedUnits,
   setOrderMessages,
   UNPAID_OPEN,
@@ -28,11 +32,13 @@ import type { Logger } from '../util/logger.js';
 import type { OutMessage, TelegramPort } from './telegram.js';
 import {
   activatedReply,
+  activationConfirm,
   activationHelpReply,
   cb,
   helpHub,
   helpView,
   historyList,
+  linkLabel,
   linksMessages,
   orderCard,
   renderStatus,
@@ -350,8 +356,9 @@ export function createFlows(deps: FlowDeps) {
   }
 
   async function renderOrderCard(order: Order, page: number): Promise<OutMessage> {
-    const hasLinks = (await deliveredLinks(db, order.id)).length > 0;
-    return orderCard({ order, page, hasLinks, facts });
+    const links = await deliveredLinks(db, order.id);
+    const activatedLinks = links.filter((l) => l.activatedAt).length;
+    return orderCard({ order, page, openLinks: links.length - activatedLinks, activatedLinks, facts });
   }
 
   /** From a history button: edits the history message into the order card. */
@@ -384,17 +391,80 @@ export function createFlows(deps: FlowDeps) {
     return true;
   }
 
-  /** "show my links": sends the order's delivered links again, as new messages (never edits). */
-  async function showLinks(telegramId: number, orderId: string): Promise<'sent' | 'none' | 'not_found'> {
+  const remainingOf = (order: Order, links: { number: number }[]) =>
+    order.status === 'delivered' ? 0 : Math.max(0, order.quantity - links.filter((l) => l.number <= order.quantity).length);
+
+  /**
+   * "show my links": sends the order's open links again, as new messages. Activated links are
+   * closed and never sent again.
+   */
+  async function showLinks(telegramId: number, orderId: string): Promise<'sent' | 'none' | 'closed' | 'not_found'> {
     const order = await findOwnOrder(db, telegramId, orderId);
     if (!order) return 'not_found';
     const links = await deliveredLinks(db, order.id);
     if (links.length === 0) return 'none';
-    const remaining = order.status === 'delivered' ? 0 : order.quantity - links.length;
-    for (const part of linksMessages({ orderNo: order.orderNo, quantity: order.quantity, links, mode: 'again', remaining, facts })) {
-      await port.send(telegramId, part);
+    const open = links.filter((l) => !l.activatedAt);
+    if (open.length === 0) {
+      await port.send(telegramId, {
+        text: `every link in order ${order.orderNo} is activated, so they're closed. enjoy google ai pro ✅`,
+        keyboard: [[supportButton(facts, order.orderNo)]],
+      });
+      return 'closed';
+    }
+    const parts = linksMessages({ orderNo: order.orderNo, quantity: order.quantity, links: open, mode: 'again', remaining: remainingOf(order, links), facts });
+    for (const part of parts) {
+      const messageId = await port.send(telegramId, part);
+      await recordLinkMessage(db, part.itemIds, messageId);
     }
     return 'sent';
+  }
+
+  // ------------------------------------------------------------ activation
+
+  /** Redraws buyer messages that show this order's links, so closed links disappear from all of them. */
+  async function refreshLinkMessages(order: Order, messageIds: Iterable<number>): Promise<void> {
+    const all = await deliveredLinks(db, order.id);
+    for (const messageId of new Set(messageIds)) {
+      const links = await linksInMessage(db, order.id, messageId);
+      if (links.length === 0) continue;
+      const parts = linksMessages({
+        orderNo: order.orderNo,
+        quantity: order.quantity,
+        links,
+        mode: links.every((l) => l.number > order.quantity) ? 'replacement' : 'again',
+        remaining: remainingOf(order, all),
+        facts,
+      });
+      // Closing links only shortens a message, so it still fits in one.
+      if (parts.length !== 1 || !parts[0]) {
+        logger.warn({ orderId: order.id, messageId }, 'links message too long to redraw');
+        continue;
+      }
+      await port.edit(order.telegramId, messageId, parts[0]);
+    }
+  }
+
+  /**
+   * The ✅ under a link: 'ask' swaps it for a confirmation, 'yes' closes the link everywhere it is
+   * shown, 'no' puts the buttons back. False if the link is not this buyer's.
+   */
+  async function activationTap(telegramId: number, messageId: number, itemId: string, step: 'ask' | 'yes' | 'no'): Promise<boolean> {
+    const found = await findOwnLink(db, telegramId, itemId);
+    if (!found) return false;
+    const { item, order } = found;
+    if (step === 'ask' && !item.activatedAt) {
+      const shown = (await linksInMessage(db, order.id, messageId)).length;
+      await port.setButtons(telegramId, messageId, activationConfirm(item.id, linkLabel(item.idx + 1, order.quantity, shown)));
+      return true;
+    }
+    if (step === 'yes') {
+      const closed = await closeLinks(db, order.id, [item.id]);
+      if (closed.length > 0) logger.info({ orderId: order.id, orderNo: order.orderNo, idx: item.idx }, 'link activated by the buyer');
+      await refreshLinkMessages(order, [messageId, ...item.messageIds]);
+      return true;
+    }
+    await refreshLinkMessages(order, [messageId]);
+    return true;
   }
 
   // ------------------------------------------------------------ help, start, reminders
@@ -408,7 +478,7 @@ export function createFlows(deps: FlowDeps) {
     await port.send(telegramId, startMessage(firstName, facts, await getOfferText(db)));
   }
 
-  /** The reminder's buttons: confirms activation, or brings in support. */
+  /** The reminder's buttons: "yes" closes every link of the order, "i need help" brings in support. */
   async function answerActivation(
     telegramId: number,
     messageId: number,
@@ -419,11 +489,13 @@ export function createFlows(deps: FlowDeps) {
     const order = await findOwnOrder(db, telegramId, orderId);
     if (!order) return false;
     if (answer === 'yes') {
+      const closed = await closeLinks(db, order.id);
       await db
         .update(orders)
         .set({ activatedConfirmedAt: sql`now()` })
         .where(and(eq(orders.id, order.id), isNull(orders.activatedConfirmedAt)));
       await port.edit(telegramId, messageId, activatedReply(order));
+      await refreshLinkMessages(order, closed.flatMap((c) => c.messageIds));
     } else {
       await port.edit(telegramId, messageId, activationHelpReply(order, facts));
       deps.notify({
@@ -448,6 +520,7 @@ export function createFlows(deps: FlowDeps) {
     showHelp,
     showStart,
     answerActivation,
+    activationTap,
     orderChanged,
     whenIdle,
     availableFor,

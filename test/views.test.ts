@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { packMessages } from '../src/bot/telegram.js';
 import {
+  activationConfirm,
   historyList,
   helpHub,
   helpView,
@@ -193,6 +194,64 @@ describe('links messages', () => {
     expect(message?.text.replace(/<code>[^<]*<\/code>/g, '')).not.toMatch(/https?:\/\//);
   });
 
+  it('each open link gets its own activated button; closed links show as done, never as a link', () => {
+    const [message] = linksMessages({
+      orderNo: 'GP-1042',
+      quantity: 3,
+      links: [
+        { number: 1, link: 'https://a.test/1', itemId: 'item-1', activatedAt: new Date('2026-10-26T13:00:00Z') },
+        { number: 2, link: 'https://a.test/2', itemId: 'item-2' },
+        { number: 3, link: 'https://a.test/3', itemId: 'item-3' },
+      ],
+      mode: 'again',
+      remaining: 0,
+      facts,
+    });
+    expect(message?.text).toContain('your links, tap to copy:');
+    expect(message?.text).toContain('link 1 of 3: activated ✅ 26 oct, closed');
+    expect(message?.text).not.toContain('https://a.test/1');
+    expect(message?.text).toContain('link 2 of 3\n<code>https://a.test/2</code>');
+    expect(message?.text).toContain("once a link is activated, tap its ✅ below and i'll close it here.");
+    expect(message?.keyboard).toEqual([
+      [
+        { text: '✅ link 2 activated', data: 'v:item-2' },
+        { text: '✅ link 3 activated', data: 'v:item-3' },
+      ],
+      [
+        { text: 'need help on whatsapp', url: supportUrl('2348087357158', 'GP-1042') },
+        { text: 'my orders', data: 'h:1' },
+      ],
+    ]);
+    expect(message?.itemIds).toEqual(['item-1', 'item-2', 'item-3']);
+  });
+
+  it('a lone link has one button, and once activated the message says so', () => {
+    const open = linksMessages({ orderNo: 'GP-7', quantity: 1, links: [{ number: 1, link: 'https://a.test/x', itemId: 'i' }], mode: 'first', remaining: 0, facts });
+    expect(open[0]?.text).toContain("once it's activated, tap ✅ below and i'll close it here.");
+    expect(open[0]?.keyboard?.[0]).toEqual([{ text: "✅ i've activated it", data: 'v:i' }]);
+
+    const closed = linksMessages({
+      orderNo: 'GP-7',
+      quantity: 1,
+      links: [{ number: 1, link: 'https://a.test/x', itemId: 'i', activatedAt: new Date('2026-10-26T13:00:00Z') }],
+      mode: 'again',
+      remaining: 0,
+      facts,
+    });
+    expect(closed[0]?.text).toBe('order GP-7\nthis link is activated ✅\nactivated ✅ 26 oct, closed.\nenjoy google ai pro!');
+    expect(closed[0]?.keyboard?.flat().map((b) => b.text)).toEqual(['need help on whatsapp', 'my orders']);
+    expect(activationConfirm('i', undefined)).toEqual([
+      [{ text: 'yes, it is activated. close it', data: 'v:y:i' }],
+      [{ text: 'not yet', data: 'v:n:i' }],
+    ]);
+  });
+
+  it('replacement links are named as such', () => {
+    const [message] = linksMessages({ orderNo: 'GP-7', quantity: 1, links: [{ number: 2, link: 'https://a.test/r', itemId: 'r' }], mode: 'replacement', remaining: 0, facts });
+    expect(message?.text).toContain('replacement for order GP-7 ✅\nyour link, tap to copy:\nreplacement link\n<code>https://a.test/r</code>');
+    expect(message?.keyboard?.[0]).toEqual([{ text: '✅ replacement link activated', data: 'v:r' }]);
+  });
+
   it('packs blocks into messages under the limit without splitting a block', () => {
     const blocks = Array.from({ length: 12 }, (_, i) => `${i}:${'x'.repeat(900)}`);
     const parts = packMessages(blocks);
@@ -228,14 +287,19 @@ describe('history and order card', () => {
     });
   });
 
-  it('the order card offers links only when there are some', () => {
+  it('the order card offers links only while some are still open', () => {
     const base = { ...statusOrder('delivered'), id: order.id, checkoutUrl: null };
-    const withLinks = orderCard({ order: base, page: 2, hasLinks: true, facts });
+    const withLinks = orderCard({ order: base, page: 2, openLinks: 1, facts });
     expect(withLinks.keyboard?.flat().map((b) => b.text)).toEqual(['show my links', 'need help on whatsapp', '‹ back to my orders']);
     expect(withLinks.keyboard?.at(-1)?.[0]).toEqual({ text: '‹ back to my orders', data: 'h:2' });
-    expect(orderCard({ order: base, page: 1, hasLinks: false, facts }).keyboard?.flat().map((b) => b.text)).not.toContain(
-      'show my links',
-    );
+    const allClosed = orderCard({ order: base, page: 1, openLinks: 0, activatedLinks: 2, facts });
+    expect(allClosed.keyboard?.flat().map((b) => b.text)).not.toContain('show my links');
+    expect(allClosed.text).toContain('activated: 2 links ✅ (closed)');
+  });
+
+  it('a fully activated order says so in history', () => {
+    const view = historyList({ orders: [{ ...rows[0]!, activatedConfirmedAt: new Date() }], page: 1, hasNext: false });
+    expect(view.keyboard?.[0]?.[0]?.text).toBe('GP-1040 · 1 link · 26 oct · activated ✅');
   });
 });
 
@@ -277,7 +341,7 @@ describe('help, start, support, reminder', () => {
 
   it('the activation reminder asks with two buttons', () => {
     expect(reminderMessage({ id: order.id, orderNo: 'GP-1042', quantity: 1 })).toEqual({
-      text: 'did you activate your link? order GP-1042',
+      text: "did you activate your link? order GP-1042\nif yes, tap below and i'll close it here.",
       keyboard: [
         [
           { text: 'yes, activated ✅', data: `a:y:${order.id}` },

@@ -1,6 +1,6 @@
 import { and, count, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { orders } from '../db/schema.js';
+import { orderItems, orders } from '../db/schema.js';
 
 // Numbers for /stats and the daily summary. "Today" is the calendar day in WAT (UTC+1, no DST).
 
@@ -32,6 +32,8 @@ export interface SalesStats {
   inProgress: number;
   /** Unpaid orders still inside their payment window. */
   pending: number;
+  /** Links buyers marked activated (and so closed), against links delivered. */
+  activation: { delivered: number; activated: number; activatedToday: number };
 }
 
 async function totals(db: Db, since?: Date): Promise<Totals> {
@@ -48,8 +50,25 @@ async function totals(db: Db, since?: Date): Promise<Totals> {
   return { orders: row?.orders ?? 0, links: row?.links ?? 0, revenueNgn: row?.revenueNgn ?? 0 };
 }
 
+async function activation(db: Db, now: Date): Promise<SalesStats['activation']> {
+  const [row] = await db
+    .select({
+      delivered: sql<number>`count(${orderItems.deliveredAt})::int`,
+      activated: sql<number>`count(${orderItems.activatedAt})::int`,
+      activatedToday: sql<number>`(count(*) filter (where ${orderItems.activatedAt} >= ${startOfWatDay(now).toISOString()}::timestamptz))::int`,
+    })
+    .from(orderItems);
+  return { delivered: row?.delivered ?? 0, activated: row?.activated ?? 0, activatedToday: row?.activatedToday ?? 0 };
+}
+
+/** "activated: 3 of 5 delivered links (60%), 1 today". */
+export function activationLine(a: SalesStats['activation']): string {
+  const rate = a.delivered > 0 ? ` (${Math.round((a.activated / a.delivered) * 100)}%)` : '';
+  return `activated: ${a.activated} of ${a.delivered} delivered links${rate}, ${a.activatedToday} today`;
+}
+
 export async function salesStats(db: Db, now = new Date()): Promise<SalesStats> {
-  const [today, total, failures, inProgress, pending] = await Promise.all([
+  const [today, total, failures, inProgress, pending, activated] = await Promise.all([
     totals(db, startOfWatDay(now)),
     totals(db),
     db
@@ -64,6 +83,7 @@ export async function salesStats(db: Db, now = new Date()): Promise<SalesStats> 
       .select({ n: count() })
       .from(orders)
       .where(and(eq(orders.status, 'awaiting_payment'), sql`${orders.expiresAt} > now()`)),
+    activation(db, now),
   ]);
   return {
     today,
@@ -71,5 +91,6 @@ export async function salesStats(db: Db, now = new Date()): Promise<SalesStats> 
     failures: failures[0]?.n ?? 0,
     inProgress: inProgress[0]?.n ?? 0,
     pending: pending[0]?.n ?? 0,
+    activation: activated,
   };
 }

@@ -1,6 +1,6 @@
 import { HELP_HUB_TEXT, HELP_TOPICS, helpPage, type HelpContext, type HelpPage } from '../content/help.js';
 import type { Order } from '../db/schema.js';
-import { escapeHtml, packMessages, type Button, type Keyboard, type OutMessage } from './telegram.js';
+import { escapeHtml, packBlocks, type Button, type Keyboard, type OutMessage } from './telegram.js';
 
 // Pure renderers: data in, message out. Every buyer facing text in the bot's own voice lives here
 // or in content/help.ts. Lowercase, short, no em dashes.
@@ -40,6 +40,10 @@ export const cb = {
   help: (page: HelpPage | 'hub') => `hp:${page}`,
   activated: (orderId: string) => `a:y:${orderId}`,
   activationHelp: (orderId: string) => `a:h:${orderId}`,
+  // One link: "i've activated it", then "yes" or "not yet".
+  activate: (itemId: string) => `v:${itemId}`,
+  activateYes: (itemId: string) => `v:y:${itemId}`,
+  activateNo: (itemId: string) => `v:n:${itemId}`,
 };
 
 export function supportUrl(intl: string, orderNo?: string): string {
@@ -200,16 +204,30 @@ export function renderStatus(order: StatusOrder, facts: UiFacts): OutMessage {
 // ---------------------------------------------------------------- links (delivery and "show my links")
 
 export interface LinkItem {
-  /** 1-based position in the order. */
+  /** 1-based position in the order; numbers past the quantity are replacements. */
   number: number;
   link: string;
+  /** order_items.id. With it, an open link gets its own "i've activated it" button. */
+  itemId?: string;
+  /** Activated links are closed: shown as done, never as a link again. */
+  activatedAt?: Date | null;
 }
 
 export type LinksMode = 'first' | 'more' | 'again' | 'replacement';
 
+/** A links message, and the order_items it shows (to edit it when one of them is activated). */
+export type LinksMessage = OutMessage & { itemIds: string[] };
+
+/** How a link is named to the buyer: nothing for a lone link, else "link 2 of 3" or "replacement link". */
+export function linkLabel(number: number, quantity: number, shown: number): string | undefined {
+  if (quantity <= 1 && shown <= 1 && number <= 1) return undefined;
+  return number > quantity ? 'replacement link' : `link ${number} of ${quantity}`;
+}
+
 /**
  * Tap-to-copy links: each in <code> (escaped), HTML parse mode, no previews, split under 4096
- * characters. Buttons only on the last part. These messages are never edited or deleted.
+ * characters. Each open link has a button to mark it activated; once activated it is closed and
+ * the message is edited to say so. Support and history buttons go on the last part.
  */
 export function linksMessages(input: {
   orderNo: string;
@@ -219,38 +237,77 @@ export function linksMessages(input: {
   /** Links of this order still on the way. */
   remaining: number;
   facts: UiFacts;
-}): OutMessage[] {
+}): LinksMessage[] {
   const { orderNo, quantity, links, mode, remaining, facts } = input;
-  const many = links.length > 1;
+  const open = links.filter((l) => !l.activatedAt);
+  const tappable = open.filter((l) => l.itemId);
+  const label = (l: LinkItem) => linkLabel(l.number, quantity, links.length);
   const header = {
     first: `payment confirmed ✅ order ${orderNo}`,
     more: `more of order ${orderNo} is ready ✅`,
     again: `order ${orderNo}`,
     replacement: `replacement for order ${orderNo} ✅`,
   }[mode];
-  const blocks = [
-    `${header}\nyour ${plural(links.length, 'link', 'links')}, tap to copy:`,
-    ...links.map(({ number, link }) =>
-      quantity > 1 ? `link ${number} of ${quantity}\n<code>${escapeHtml(link)}</code>` : `<code>${escapeHtml(link)}</code>`,
-    ),
-    [
-      "open the browser where you're already signed in to the google account you want it on, paste the link and activate it.",
-      many
-        ? '⚠️ these links expire soon, so activate them now. if one expires before you activate it, there is no refund.'
-        : '⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.',
-      ...(remaining > 0
-        ? [`the other ${remaining === 1 ? 'link is' : `${remaining} links are`} being sorted, we'll send ${plural(remaining, 'it', 'them')} here.`]
-        : []),
-    ].join('\n'),
+  const intro =
+    open.length > 0
+      ? `your ${plural(open.length, 'link', 'links')}, tap to copy:`
+      : `${plural(links.length, 'this link is', 'these links are')} activated ✅`;
+  const linkBlocks = links.map((l) => {
+    const name = label(l);
+    if (l.activatedAt) {
+      const done = `activated ✅ ${watDate(l.activatedAt)}, closed`;
+      return name ? `${name}: ${done}` : `${done}.`;
+    }
+    const code = `<code>${escapeHtml(l.link)}</code>`;
+    return name ? `${name}\n${code}` : code;
+  });
+  const still =
+    remaining > 0
+      ? [`the other ${remaining === 1 ? 'link is' : `${remaining} links are`} being sorted, we'll send ${plural(remaining, 'it', 'them')} here.`]
+      : [];
+  const footer =
+    open.length > 0
+      ? [
+          "open the browser where you're already signed in to the google account you want it on, paste the link and activate it.",
+          open.length > 1
+            ? '⚠️ these links expire soon, so activate them now. if one expires before you activate it, there is no refund.'
+            : '⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.',
+          ...(tappable.length === 1 ? ["once it's activated, tap ✅ below and i'll close it here."] : []),
+          ...(tappable.length > 1 ? ["once a link is activated, tap its ✅ below and i'll close it here."] : []),
+          ...still,
+        ]
+      : ['enjoy google ai pro!', ...still];
+  const blocks = [`${header}\n${intro}`, ...linkBlocks, footer.join('\n')];
+  const groups = packBlocks(blocks);
+
+  return groups.map((group, p) => {
+    // Block 0 is the header and the last one the footer; the ones between are links, in order.
+    const shown = group.filter((b) => b >= 1 && b <= links.length).map((b) => links[b - 1] as LinkItem);
+    const taps = shown
+      .filter((l) => !l.activatedAt && l.itemId)
+      .map((l) => {
+        const name = label(l);
+        return { text: name ? `✅ ${name.replace(/ of \d+$/, '')} activated` : "✅ i've activated it", data: cb.activate(l.itemId as string) };
+      });
+    const keyboard: Keyboard = [];
+    for (let i = 0; i < taps.length; i += 2) keyboard.push(taps.slice(i, i + 2));
+    if (p === groups.length - 1) keyboard.push([supportButton(facts, orderNo), { text: 'my orders', data: cb.history(1) }]);
+    return {
+      text: group.map((b) => blocks[b]).join('\n'),
+      html: true,
+      ...(keyboard.length > 0 && { keyboard }),
+      itemIds: shown.flatMap((l) => (l.itemId ? [l.itemId] : [])),
+    };
+  });
+}
+
+/** Swaps a link's ✅ button for a confirmation: closing a link cannot be undone. */
+export function activationConfirm(itemId: string, name: string | undefined): Keyboard {
+  const what = name ? name.replace(/ of \d+$/, '') : 'it';
+  return [
+    [{ text: `yes, ${what} is activated. close it`, data: cb.activateYes(itemId) }],
+    [{ text: 'not yet', data: cb.activateNo(itemId) }],
   ];
-  const parts = packMessages(blocks);
-  return parts.map((text, i) => ({
-    text,
-    html: true,
-    ...(i === parts.length - 1 && {
-      keyboard: [[supportButton(facts, orderNo), { text: 'my orders', data: cb.history(1) }]],
-    }),
-  }));
 }
 
 /** Sent once when a paid order could not be fulfilled at all on the first try. */
@@ -267,12 +324,13 @@ export function delayedMessage(order: Pick<Order, 'orderNo' | 'quantity'>, facts
 
 // ---------------------------------------------------------------- history and order card
 
-export type HistoryOrder = Pick<Order, 'id' | 'orderNo' | 'quantity' | 'status' | 'createdAt' | 'paidAt'>;
+export type HistoryOrder = Pick<Order, 'id' | 'orderNo' | 'quantity' | 'status' | 'createdAt' | 'paidAt'> &
+  Partial<Pick<Order, 'activatedConfirmedAt'>>;
 
-export function statusLabel(order: Pick<Order, 'status' | 'paidAt'>): string {
+export function statusLabel(order: Pick<Order, 'status' | 'paidAt'> & Partial<Pick<Order, 'activatedConfirmedAt'>>): string {
   switch (order.status) {
     case 'delivered':
-      return 'delivered ✅';
+      return order.activatedConfirmedAt ? 'activated ✅' : 'delivered ✅';
     case 'created':
     case 'awaiting_payment':
       return 'waiting for payment ⏳';
@@ -315,16 +373,19 @@ export function historyList({ orders, page, hasNext }: { orders: HistoryOrder[];
 export function orderCard({
   order,
   page,
-  hasLinks,
+  openLinks,
+  activatedLinks = 0,
   facts,
 }: {
   order: StatusOrder & Pick<Order, 'id' | 'checkoutUrl'>;
   page: number;
-  hasLinks: boolean;
+  /** Delivered links not activated yet: only these can be shown again. */
+  openLinks: number;
+  activatedLinks?: number;
   facts: UiFacts;
 }): OutMessage {
   const keyboard: Keyboard = [];
-  if (hasLinks) keyboard.push([{ text: 'show my links', data: cb.links(order.id) }]);
+  if (openLinks > 0) keyboard.push([{ text: 'show my links', data: cb.links(order.id) }]);
   if ((order.status === 'awaiting_payment' || order.status === 'created') && order.checkoutUrl) {
     keyboard.push([{ text: `pay ${payLabel(order, facts)}`, url: order.checkoutUrl }]);
   }
@@ -336,6 +397,7 @@ export function orderCard({
       '',
       `${order.quantity} ${plural(order.quantity, 'link', 'links')} · ${naira(order.amountNgn)}${facts.grossUp ? '' : ' + fee'}`,
       `ordered ${watDateTime(order.createdAt)}`,
+      ...(activatedLinks > 0 ? [`activated: ${activatedLinks} ${plural(activatedLinks, 'link', 'links')} ✅ (closed)`] : []),
     ].join('\n'),
     keyboard,
   };
@@ -363,7 +425,7 @@ export function helpView(page: HelpPage, facts: UiFacts, offerText: string): Out
 
 export function reminderMessage(order: Pick<Order, 'id' | 'orderNo' | 'quantity'>): OutMessage {
   return {
-    text: `did you activate your ${plural(order.quantity, 'link', 'links')}? order ${order.orderNo}`,
+    text: `did you activate your ${plural(order.quantity, 'link', 'links')}? order ${order.orderNo}\nif yes, tap below and i'll close ${plural(order.quantity, 'it', 'them')} here.`,
     keyboard: [
       [
         { text: 'yes, activated ✅', data: cb.activated(order.id) },

@@ -11,6 +11,8 @@ export interface OutMessage {
   /** parse_mode HTML. Anything not written by us must go through escapeHtml. */
   html?: boolean;
   keyboard?: Keyboard;
+  /** Opens the reply box under this message with this placeholder (instead of a keyboard). Send only. */
+  forceReply?: string;
 }
 
 /** 'gone': the message no longer exists or can no longer be edited. 'failed': try again later. */
@@ -81,7 +83,12 @@ export function grammyPort(api: Api): TelegramPort {
   return {
     async send(chatId, message) {
       try {
-        const sent = await api.sendMessage(chatId, message.text, options(message));
+        const sent = await api.sendMessage(chatId, message.text, {
+          ...options(message),
+          ...(message.forceReply !== undefined && {
+            reply_markup: { force_reply: true as const, input_field_placeholder: message.forceReply },
+          }),
+        });
         return sent.message_id;
       } catch (err) {
         throw sendError(err);
@@ -111,17 +118,25 @@ export function grammyPort(api: Api): TelegramPort {
 
 /** Packs text blocks into messages under Telegram's 4096 character limit, keeping blocks whole. */
 export function packMessages(blocks: string[], max = 4000): string[] {
-  const messages: string[] = [];
-  let current = '';
-  for (const block of blocks) {
-    const next = current ? `${current}\n${block}` : block;
-    if (next.length > max && current) {
-      messages.push(current);
-      current = block;
+  return packBlocks(blocks, max).map((group) => group.map((i) => blocks[i]).join('\n'));
+}
+
+/** Like packMessages, but returns which blocks (by index) went into each message. */
+export function packBlocks(blocks: string[], max = 4000): number[][] {
+  const groups: number[][] = [];
+  let current: number[] = [];
+  let length = 0;
+  blocks.forEach((block, i) => {
+    const next = current.length > 0 ? length + 1 + block.length : block.length;
+    if (next > max && current.length > 0) {
+      groups.push(current);
+      current = [i];
+      length = block.length;
     } else {
-      current = next;
+      current.push(i);
+      length = next;
     }
-  }
-  if (current) messages.push(current);
-  return messages;
+  });
+  if (current.length > 0) groups.push(current);
+  return groups;
 }

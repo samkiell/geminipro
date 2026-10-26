@@ -198,6 +198,14 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
         await flows.answerActivation(telegramId, messageId, b, a === 'y' ? 'yes' : 'help', ctx.from.username);
         return;
       }
+      case 'v': {
+        // v:<itemId> asks to confirm, v:y:<itemId> closes the link, v:n:<itemId> backs out.
+        const step = a === 'y' ? 'yes' : a === 'n' ? 'no' : 'ask';
+        const itemId = step === 'ask' ? a : b;
+        if (!messageId || !(await flows.activationTap(telegramId, messageId, itemId, step))) return stale();
+        await port.answer(queryId, step === 'yes' ? 'marked activated ✅' : step === 'ask' ? 'this closes the link in this chat' : undefined);
+        return;
+      }
       default:
         await stale();
     }

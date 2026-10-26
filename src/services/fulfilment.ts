@@ -1,13 +1,13 @@
 import { setTimeout as sleep } from 'node:timers/promises';
-import { asc, eq, inArray, sql } from 'drizzle-orm';
-import { escapeHtml, SendError, type TelegramPort } from '../bot/telegram.js';
+import { asc, eq, sql } from 'drizzle-orm';
+import { SendError, type TelegramPort } from '../bot/telegram.js';
 import { delayedMessage, linksMessages, type UiFacts } from '../bot/views.js';
 import type { Db } from '../db/client.js';
 import { events, orderItems, orders, users, type Order, type OrderItem } from '../db/schema.js';
 import type { Logger } from '../util/logger.js';
 import { Semaphore } from '../util/semaphore.js';
 import type { Notify } from './notifier.js';
-import { claimForFulfilment, finishFulfilment, renewLease } from './orders.js';
+import { claimForFulfilment, finishFulfilment, recordLinkMessage, renewLease } from './orders.js';
 import { ResellerError, type ResellerClient } from './reseller.js';
 import { setPaused } from './settings.js';
 
@@ -76,25 +76,20 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
     const parts = linksMessages({
       orderNo: order.orderNo,
       quantity: order.quantity,
-      links: fresh.map((i) => ({ number: i.idx + 1, link: i.activationLink as string })),
+      links: fresh.map((i) => ({ number: i.idx + 1, link: i.activationLink as string, itemId: i.id })),
       mode: deliveredBefore === 0 ? 'first' : 'more',
       remaining,
       facts: deps.facts,
     });
     for (const part of parts) {
+      let messageId: number;
       try {
-        await deps.port.send(order.telegramId, part);
+        messageId = await deps.port.send(order.telegramId, part);
       } catch (err) {
         return finish(deps, deliveryFailed(deps, order, err, deliveredBefore > 0, log), orderId);
       }
       // Delivered only once Telegram accepted the message that carries the link.
-      const inPart = fresh.filter((i) => part.text.includes(escapeHtml(i.activationLink as string)));
-      if (inPart.length > 0) {
-        await db
-          .update(orderItems)
-          .set({ deliveredAt: sql`now()` })
-          .where(inArray(orderItems.id, inPart.map((i) => i.id)));
-      }
+      await recordLinkMessage(db, part.itemIds, messageId);
     }
     log.info({ links: fresh.length }, 'links delivered');
   }

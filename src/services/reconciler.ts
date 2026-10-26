@@ -9,7 +9,7 @@ import { expireUnpaidOrders, holdPayment, markPaid, reservedUnits } from './orde
 import { paymentProblem, type PaymentProvider } from './payments.js';
 import type { ResellerClient } from './reseller.js';
 import { getSetting, setSetting } from './settings.js';
-import { salesStats, watDateKey } from './stats.js';
+import { activationLine, salesStats, watDateKey } from './stats.js';
 
 // docs/ARCHITECTURE.md 7.4. Catches whatever the event driven paths missed: a sleeping service,
 // a lost webhook, a crash in the middle of fulfilment. Runs once at boot, then on timers.
@@ -151,6 +151,7 @@ export function createReconciler(deps: ReconcilerDeps) {
         `failures: ${s.failures} · in progress: ${s.inProgress} · waiting for payment: ${s.pending}`,
         `reseller: ${stock}`,
         `total so far: ${s.total.orders} orders, ${s.total.links} links, ${naira(s.total.revenueNgn)}`,
+        activationLine(s.activation),
       ].join('\n'),
     });
   }
