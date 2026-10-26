@@ -1,10 +1,17 @@
-import { ConfigError, loadConfig, loadDotEnv, type Config } from './config.js';
+import Groq from 'groq-sdk';
+import { groqClient, runAgent } from './agent/agent.js';
+import { promptFacts, systemPrompt } from './agent/prompt.js';
+import { createBuyerServices } from './agent/services.js';
+import { createTools } from './agent/tools.js';
+import { createBot } from './bot/bot.js';
+import { botLink, ConfigError, loadConfig, loadDotEnv, type Config } from './config.js';
 import { createDb } from './db/client.js';
 import { buildServer } from './server.js';
 import { BachsClient } from './services/bachs.js';
 import { telegramSender } from './services/delivery.js';
 import { createFulfilment } from './services/fulfilment.js';
 import { logNotifier, type Notify } from './services/notifier.js';
+import { pricingFromConfig } from './services/pricing.js';
 import { createResellerClient } from './services/reseller.js';
 import { createLogger, type Logger } from './util/logger.js';
 import { withTimeout } from './util/time.js';
@@ -42,15 +49,56 @@ async function main(): Promise<void> {
 
   const notify = logNotifier(logger);
   const bachs = new BachsClient({ secretKey: config.BACHS_SECRET_KEY, logger });
+  const reseller = createResellerClient(config, logger);
+  const send = telegramSender(config.TELEGRAM_BOT_TOKEN);
   const fulfilment = createFulfilment({
     db: database.db,
-    reseller: createResellerClient(config, logger),
+    reseller,
     productId: config.RESELLER_PRODUCT_ID,
-    send: telegramSender(config.TELEGRAM_BOT_TOKEN),
+    send,
     notify,
     logger,
     supportWhatsapp: config.SUPPORT_WHATSAPP,
   });
+
+  const services = createBuyerServices({
+    db: database.db,
+    reseller,
+    bachs,
+    pricing: pricingFromConfig(config),
+    maxQtyPerOrder: config.MAX_QTY_PER_ORDER,
+    salesCutoff: config.SALES_CUTOFF,
+    returnUrl: botLink(config),
+    supportWhatsapp: config.SUPPORT_WHATSAPP,
+    send,
+    notify,
+    logger,
+  });
+  const agentOptions = {
+    client: groqClient(new Groq({ apiKey: config.GROQ_API_KEY })),
+    models: [...new Set([config.GROQ_MODEL, ...config.GROQ_FALLBACK_MODELS])],
+    tools: createTools(services, { maxQtyPerOrder: config.MAX_QTY_PER_ORDER }),
+    systemPrompt: systemPrompt(promptFacts(config)),
+    logger,
+  };
+  const bot = createBot({
+    token: config.TELEGRAM_BOT_TOKEN,
+    db: database.db,
+    logger,
+    services,
+    agent: (input) => runAgent(agentOptions, input),
+    facts: { ...promptFacts(config), offerDeadline: config.OFFER_DEADLINE },
+  });
+  try {
+    await withTimeout(bot.init(), 15_000, 'telegram getMe');
+    logger.info({ bot: bot.botInfo.username }, 'telegram bot ready');
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'telegram bot could not start; check TELEGRAM_BOT_TOKEN');
+  }
+
+  // Locally there is no public URL for Telegram, so poll. Polling removes any webhook on this bot:
+  // run `pnpm webhook:set` again before relying on the deployed service.
+  const polling = config.NODE_ENV === 'development';
 
   const app = buildServer({
     logger,
@@ -64,11 +112,13 @@ async function main(): Promise<void> {
         await fulfilment.fulfil(orderId);
       },
     },
+    ...(!polling && { telegram: { bot, secretToken: config.TELEGRAM_WEBHOOK_SECRET } }),
   });
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     logger.info({ signal }, 'shutting down');
     try {
+      if (polling) await bot.stop();
       await app.close();
       await database.close();
     } finally {
@@ -79,6 +129,11 @@ async function main(): Promise<void> {
   process.once('SIGINT', shutdown);
 
   await app.listen({ host: '0.0.0.0', port: config.PORT });
+  if (polling) {
+    bot
+      .start({ onStart: () => logger.info('telegram long polling started (development)') })
+      .catch((err: unknown) => logger.error({ err: (err as Error).message }, 'telegram polling stopped'));
+  }
   if (!config.BACHS_WEBHOOK_SECRET) {
     notify({
       level: 'warning',
