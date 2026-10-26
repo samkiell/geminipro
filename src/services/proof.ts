@@ -89,18 +89,32 @@ export function createProof(deps: ProofDeps) {
       return 'missing';
     }
     await port.send(telegramId, { text: PROOF_INTRO });
-    const photos: AlbumPhoto[] = items.map((i) => (i.fileId ? { fileId: i.fileId } : { path: join(deps.dir, i.key) }));
-    const fileIds = await port.sendAlbum(telegramId, photos, PROOF_CAPTION);
+    await sendAlbum(telegramId, items, PROOF_CAPTION);
+    await port.send(telegramId, { text: PROOF_AFTER, keyboard: after });
+    return 'sent';
+  }
+
+  /** For admins (/proofs): every screenshot, each captioned with the id /delproof takes. */
+  async function showAll(chatId: number): Promise<number> {
+    const items = await activeProof(db);
+    if (items.length > 0) await sendAlbum(chatId, items, '', (item) => `#${item.id}`);
+    return items.length;
+  }
+
+  async function sendAlbum(chatId: number, items: ProofItem[], caption: string, label?: (item: ProofItem) => string): Promise<void> {
+    const photos: AlbumPhoto[] = items.map((i) => ({
+      ...(i.fileId ? { fileId: i.fileId } : { path: join(deps.dir, i.key) }),
+      ...(label && { caption: label(i) }),
+    }));
+    const fileIds = await port.sendAlbum(chatId, photos, caption);
     // Remember uploads, so the next album is sent by file_id.
     for (const [i, item] of items.entries()) {
       const fileId = fileIds[i];
       if (!item.fileId && fileId) await db.update(proofItems).set({ fileId }).where(eq(proofItems.id, item.id));
     }
-    await port.send(telegramId, { text: PROOF_AFTER, keyboard: after });
-    return 'sent';
   }
 
-  return { send };
+  return { send, showAll };
 }
 
 export type Proof = ReturnType<typeof createProof>;

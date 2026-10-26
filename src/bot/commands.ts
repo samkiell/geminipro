@@ -21,6 +21,7 @@ export const ADMIN_COMMANDS = [
   { command: 'resume', description: 'restart sales' },
   { command: 'offertext', description: 'show or set the offer line' },
   { command: 'leads', description: 'latest business inquiries' },
-  { command: 'proofs', description: 'proof screenshots (add: send a photo captioned /addproof)' },
+  { command: 'proofs', description: 'proof screenshots: list and remove' },
+  { command: 'addproof', description: 'add proof screenshots: send this, then the photos' },
   { command: 'delproof', description: 'remove a proof screenshot by id: /delproof 1' },
 ];

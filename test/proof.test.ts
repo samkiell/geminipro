@@ -84,6 +84,7 @@ describe('proof screenshots', () => {
       productId: 1,
       flows: { orderChanged: () => {} },
       notify: () => {},
+      proof: proof(),
     });
     let id = 1;
     const photo = (from: number, caption: string, unique: string): Update =>
@@ -127,6 +128,11 @@ describe('proof screenshots', () => {
     expect((await activeProof(testDb.db)).map((p) => p.fileId)).toEqual(['big-u1', 'big-u2']);
 
     await bot.handleUpdate(command(ADMIN, '/proofs'));
+    // The photos themselves first, each labelled with the id /delproof takes.
+    expect(tg.albums.at(-1)?.photos).toEqual([
+      { fileId: 'big-u1', caption: '#1' },
+      { fileId: 'big-u2', caption: '#2' },
+    ]);
     const list = tg.sent.at(-1);
     expect(list?.text).toContain('#1 sent in telegram\n#2 sent in telegram');
     expect(tg.buttons(list?.id).map((b) => b.text)).toEqual(['🗑 remove #1', '🗑 remove #2', '‹ panel']);
@@ -140,6 +146,27 @@ describe('proof screenshots', () => {
     // Removed for good, so the same screenshot can be added again.
     await bot.handleUpdate(photo(ADMIN, '/addproof', 'u1'));
     expect(tg.textsTo(ADMIN).at(-1)).toBe('added. the album now has 2 of 10. check it with /proofs.');
+
+    // /addproof as text: the photos that follow are added without a caption, as an album's are.
+    await bot.handleUpdate(command(ADMIN, '/addproof'));
+    expect(tg.textsTo(ADMIN).at(-1)).toContain('send the screenshots now, as photos (not files)');
+    await bot.handleUpdate(photo(ADMIN, '', 'u4'));
+    expect(tg.textsTo(ADMIN).at(-1)).toBe('added. the album now has 3 of 10. check it with /proofs.');
+    await bot.handleUpdate(photo(42, '', 'u5')); // a buyer: ignored
+    expect((await activeProof(testDb.db)).map((p) => p.fileId)).toEqual(['big-u2', 'big-u1', 'big-u4']);
+
+    // An image sent as a file cannot go in the album: say how to send it.
+    await bot.handleUpdate({
+      update_id: id++,
+      message: {
+        message_id: id,
+        date: 0,
+        chat: { id: ADMIN, type: 'private', first_name: 'x' },
+        from: { id: ADMIN, is_bot: false, first_name: 'x' },
+        document: { file_id: 'doc-1', file_unique_id: 'doc-1u', mime_type: 'image/jpeg' },
+      },
+    } as Update);
+    expect(tg.textsTo(ADMIN).at(-1)).toBe("that came as a file. send it as a photo (compressed) and i'll add it.");
   });
 });
 

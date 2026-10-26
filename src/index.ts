@@ -230,6 +230,7 @@ async function main(): Promise<void> {
         productId: config.RESELLER_PRODUCT_ID,
         flows,
         notify,
+        proof,
       }),
   });
   try {

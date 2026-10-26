@@ -32,12 +32,13 @@ export class SendError extends Error {
 }
 
 /** A photo already on Telegram (its file_id), or a local file to upload. */
-export type AlbumPhoto = { fileId: string } | { path: string };
+/** A photo for an album, by file_id or from disk, optionally with its own caption. */
+export type AlbumPhoto = ({ fileId: string } | { path: string }) & { caption?: string };
 
 export interface TelegramPort {
   /** Returns the new message id. Throws SendError. */
   send(chatId: number, message: OutMessage): Promise<number>;
-  /** Up to 10 photos as one album, the caption on the first. Returns each photo's file_id. Throws SendError. */
+  /** Up to 10 photos as one album, `caption` on the first unless photos carry their own. Returns each photo's file_id. Throws SendError. */
   sendAlbum(chatId: number, photos: AlbumPhoto[], caption: string): Promise<string[]>;
   /** Replaces text and buttons (no keyboard removes them). Never throws. */
   edit(chatId: number, messageId: number, message: OutMessage): Promise<EditOutcome>;
@@ -125,11 +126,10 @@ export function grammyPort(api: Api): TelegramPort {
       try {
         const sent = await api.sendMediaGroup(
           chatId,
-          photos.slice(0, 10).map((p, i) => ({
-            type: 'photo' as const,
-            media: 'fileId' in p ? p.fileId : new InputFile(p.path),
-            ...(i === 0 && { caption }),
-          })),
+          photos.slice(0, 10).map((p, i) => {
+            const text = p.caption ?? (i === 0 ? caption : undefined);
+            return { type: 'photo' as const, media: 'fileId' in p ? p.fileId : new InputFile(p.path), ...(text && { caption: text }) };
+          }),
         );
         // The largest size of each photo; reusing its file_id sends it again without an upload.
         return sent.map((m) => ('photo' in m ? m.photo.at(-1)?.file_id : undefined) ?? '');

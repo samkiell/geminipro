@@ -6,7 +6,7 @@ import { latestLeads } from '../services/leads.js';
 import type { Notify } from '../services/notifier.js';
 import { findOrderByNo, recordLinkMessage, reservedUnits } from '../services/orders.js';
 import type { ResellerClient } from '../services/reseller.js';
-import { activeProof, addProof, MAX_PROOF, removeProof } from '../services/proof.js';
+import { activeProof, addProof, MAX_PROOF, removeProof, type Proof } from '../services/proof.js';
 import { getOfferText, isPaused, setOfferText, setPaused } from '../services/settings.js';
 import { referralStats } from '../services/referrals.js';
 import { activationLine, referralLine, salesStats } from '../services/stats.js';
@@ -29,6 +29,8 @@ export interface AdminDeps {
   productId: number;
   flows: Pick<Flows, 'orderChanged'>;
   notify: Notify;
+  /** Shows the album's photos above /proofs. */
+  proof?: Pick<Proof, 'showAll'>;
 }
 
 const PANEL_TEXT = [
@@ -153,17 +155,27 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
     const items = await activeProof(db);
     const head = note ? [note] : [];
     if (items.length === 0) {
-      return { text: [...head, 'no proof screenshots yet. send a photo with the caption /addproof.'].join('\n'), keyboard: BACK };
+      return { text: [...head, 'no proof screenshots yet. send /addproof, then the screenshots as photos.'].join('\n'), keyboard: BACK };
     }
     return {
       text: [
         ...head,
         `proof album (${items.length} of ${MAX_PROOF}), in order:`,
         ...items.map((p) => `#${p.id} ${p.key.startsWith('tg:') ? 'sent in telegram' : p.key}${p.fileId ? '' : ' (not uploaded yet)'}`),
-        'tap one to remove it, or send /delproof <id>.',
+        'tap one to remove it, or send /delproof <id>. add more with /addproof.',
       ].join('\n'),
       keyboard: [...items.map((p) => [{ text: `🗑 remove #${p.id}`, data: `ad:pd:${p.id}` }]), ...BACK],
     };
+  }
+
+  /** /proofs: the photos themselves (each captioned #id), then the list with remove buttons. */
+  async function showProofs(chat: number): Promise<number> {
+    try {
+      return (await deps.proof?.showAll(chat)) ?? 0;
+    } catch (err) {
+      deps.logger.warn({ err: (err as Error).message }, 'proof album not shown to admin');
+      return 0;
+    }
   }
 
   async function deleteProof(id: number): Promise<OutMessage> {
@@ -388,8 +400,20 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
   });
 
   // Proof screenshots: real, with personal details blurred (README checklist). Never generated.
+  // /addproof (or a photo captioned /addproof) opens a 10 minute window in which every photo the
+  // admin sends is added: an album arrives one photo at a time, with the caption only on the first.
+  const ADD_PROOF_WINDOW_MS = 10 * 60_000;
+  const addingProof = new Map<number, number>();
+  const wantsProof = (adminId: number, caption: string | undefined) =>
+    /^\/addproof\b/i.test(caption ?? '') || (addingProof.get(adminId) ?? 0) > Date.now();
+
+  admin.command('addproof', async (ctx) => {
+    addingProof.set(ctx.from.id, Date.now() + ADD_PROOF_WINDOW_MS);
+    await reply(ctx, { text: 'send the screenshots now, as photos (not files). real activations only, with emails, names and numbers blurred.' });
+  });
   admin.on('message:photo', async (ctx, next) => {
-    if (!/^\/addproof\b/i.test(ctx.message.caption ?? '')) return next();
+    if (!wantsProof(ctx.from.id, ctx.message.caption)) return next();
+    addingProof.set(ctx.from.id, Date.now() + ADD_PROOF_WINDOW_MS);
     const photo = ctx.message.photo.at(-1);
     if (!photo) return;
     const result = await addProof(db, photo.file_id, photo.file_unique_id);
@@ -401,7 +425,13 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
       }[result],
     });
   });
+  // An image sent as a file has no photo file_id, and the album can only send photos.
+  admin.on('message:document', async (ctx, next) => {
+    if (!ctx.message.document.mime_type?.startsWith('image/') || !wantsProof(ctx.from.id, ctx.message.caption)) return next();
+    await reply(ctx, { text: "that came as a file. send it as a photo (compressed) and i'll add it." });
+  });
   admin.command('proofs', async (ctx) => {
+    await showProofs(ctx.from.id);
     await reply(ctx, await proofsView());
   });
   admin.command('delproof', async (ctx) => {
@@ -447,7 +477,11 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
       if (arg === 'orders') return show(await ordersView());
       if (arg === 'leads') return show({ text: await leadsView(), keyboard: BACK });
       if (arg === 'offer') return show(await offerView());
-      if (arg === 'proofs') return show(await proofsView());
+      if (arg === 'proofs') {
+        // With photos, the list goes below them as a new message rather than editing the panel above.
+        if ((await showProofs(chat)) > 0) return void (await port.send(chat, await proofsView()));
+        return show(await proofsView());
+      }
       if (arg === 'pause' || arg === 'resume') {
         await setPaused(db, arg === 'pause');
         return show({ text: arg === 'pause' ? 'sales paused.' : 'sales are on again.', keyboard: BACK });

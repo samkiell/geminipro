@@ -58,7 +58,7 @@ The bot switches to scripted replies by itself and keeps selling through the ord
 
 ## Proof screenshots
 
-Add one by sending the photo to the bot with the caption `/addproof` (real, personal details blurred). `/proofs` lists the album by id with a 🗑 button under each; tap one, or send `/delproof 3` to remove #3 for good. Ids never shift. Files in `assets/proof/` are only read at boot while the album is empty.
+Send `/addproof`, then the screenshots as photos, not files (real, personal details blurred); every photo you send in the next 10 minutes is added, albums included. A photo captioned `/addproof` works too. `/proofs` shows the photos (each labelled with its id), then the list with a 🗑 button under each; tap one, or send `/delproof 3` to remove #3 for good. Ids never shift. Files in `assets/proof/` are only read at boot while the album is empty.
 
 ## Render is asleep or restarting
 
