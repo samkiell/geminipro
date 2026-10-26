@@ -15,7 +15,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts",
+    "mock:reseller": "tsx test/mocks/reseller-server.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",
