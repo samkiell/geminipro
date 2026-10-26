@@ -115,6 +115,7 @@ async function deliveredOrder() {
 }
 
 const lastTextTo = (chatId: number) => tg.textsTo(chatId).at(-1) ?? '';
+const BUYER_LAST = () => tg.sent.filter((m) => m.chatId === BUYER).at(-1)?.id;
 
 describe('admin commands', () => {
   it('do not exist for anyone who is not an admin', async () => {
@@ -188,26 +189,125 @@ describe('admin commands', () => {
     expect(items[1]?.deliveredAt).toBeInstanceOf(Date);
     expect(tg.textsTo(BUYER).at(-1)).toContain(`replacement for order ${order.orderNo} ✅`);
     expect(tg.textsTo(BUYER).at(-1)).toContain(`<code>${items[1]?.activationLink}</code>`);
-    expect(lastTextTo(ADMIN)).toBe(`replacement for ${order.orderNo} bought and sent to the buyer.`);
-    expect(await testDb.db.select().from(events).where(eq(events.kind, 'replacement'))).toHaveLength(2);
+    expect(tg.buttons(BUYER_LAST()).map((b) => b.text)).toContain('✅ replacement link activated');
+    expect(lastTextTo(ADMIN)).toBe(`that replacement for ${order.orderNo} was already bought. use /resend ${order.orderNo} if the buyer did not get it.`);
+    expect(await testDb.db.select().from(events).where(eq(events.kind, 'replacement'))).toHaveLength(1);
+    expect(tg.textsTo(BUYER).filter((t) => t.startsWith('replacement for order'))).toHaveLength(1);
   });
 
-  it('/admin opens a panel whose buttons edit it in place', async () => {
+  it('/resend never sends a link the buyer marked activated', async () => {
+    const order = await deliveredOrder();
+    await testDb.db.update(orderItems).set({ activatedAt: new Date() }).where(eq(orderItems.orderId, order.id));
+    const bot = makeBot();
+    await bot.handleUpdate(command(`/resend ${order.orderNo}`, ADMIN));
+    expect(lastTextTo(ADMIN)).toBe(`every link of ${order.orderNo} is activated and closed. nothing to resend.`);
+    expect(tg.textsTo(BUYER)).toEqual([]);
+    await bot.handleUpdate(command('/stats', ADMIN));
+    expect(lastTextTo(ADMIN)).toContain('activated: 1 of 1 delivered links (100%), 1 today');
+    await bot.handleUpdate(command(`/order ${order.orderNo}`, ADMIN));
+    expect(lastTextTo(ADMIN)).toMatch(/link 1: completed, delivered, activated \d+ \w+, \d\d:\d\d wat/);
+  });
+
+  it('/offertext refuses a date', async () => {
+    const bot = makeBot();
+    const before = await getOfferText(testDb.db);
+    for (const text of ['ends 29 oct', 'until oct 29', 'till 29/10', 'last day 2026']) {
+      await bot.handleUpdate(command(`/offertext ${text}`, ADMIN));
+      expect(lastTextTo(ADMIN)).toContain('must not contain a date');
+    }
+    expect(await getOfferText(testDb.db)).toBe(before);
+  });
+
+  it('/admin opens a panel with every command; its views edit it in place', async () => {
     const bot = makeBot();
     await bot.handleUpdate(command('/admin', ADMIN));
     const panel = tg.sent.at(-1)?.id ?? 0;
-    expect(tg.buttons(panel).map((b) => b.text)).toEqual(['balance', 'stats', 'all orders', 'leads', 'pause sales', 'resume sales', 'offer text']);
-    await bot.handleUpdate({
-      update_id: updateId++,
-      callback_query: {
-        id: 'q1',
-        from: { id: ADMIN, is_bot: false, first_name: 'x' },
-        chat_instance: 'c',
-        data: 'ad:p:balance',
-        message: { message_id: panel, date: 0, chat: { id: ADMIN, type: 'private', first_name: 'x' } },
-      },
-    } as Update);
+    expect(tg.buttons(panel).map((b) => b.text)).toEqual([
+      'balance',
+      'stats',
+      'all orders',
+      'find an order',
+      'leads',
+      'offer text',
+      'pause sales',
+      'resume sales',
+    ]);
+    await bot.handleUpdate(tap('ad:p:balance', panel));
     expect(tg.get(panel)?.text).toContain('balance: $10.00');
     expect(tg.buttons(panel).map((b) => b.text)).toEqual(['‹ panel']);
   });
+
+  it('the panel lists orders as buttons; replace from there needs a confirm', async () => {
+    const order = await deliveredOrder();
+    const bot = makeBot();
+    await bot.handleUpdate(command('/admin', ADMIN));
+    const panel = tg.sent.at(-1)?.id ?? 0;
+    await bot.handleUpdate(tap('ad:p:orders', panel));
+    expect(tg.buttons(panel)[0]).toEqual({ text: `${order.orderNo} · delivered`, data: `ad:o:${order.id}` });
+    await bot.handleUpdate(tap(`ad:o:${order.id}`, panel));
+    expect(tg.get(panel)?.text).toContain(`${order.orderNo} · delivered`);
+    expect(tg.buttons(panel).map((b) => b.text)).toEqual(['resend to buyer', 'send me the links', 'replace a link', '‹ all orders', '‹ panel']);
+
+    await bot.handleUpdate(tap(`ad:replace:${order.id}`, panel));
+    expect(mock.state.orders).toHaveLength(0); // nothing bought yet
+    const confirm = tg.buttons(panel)[0];
+    expect(confirm?.text).toBe(`yes, buy and send 1 replacement for ${order.orderNo}`);
+    const data = confirm && 'data' in confirm ? confirm.data : '';
+    await bot.handleUpdate(tap(data, panel));
+    await bot.handleUpdate(tap(data, panel)); // double tap
+    expect(mock.state.orders).toHaveLength(1);
+    expect(tg.textsTo(BUYER).filter((t) => t.startsWith('replacement for order'))).toHaveLength(1);
+  });
+
+  it('find an order and change offer text ask for a reply, and act on it', async () => {
+    const order = await deliveredOrder();
+    const bot = makeBot();
+    await bot.handleUpdate(tap('ad:ask:order', 1));
+    const ask = tg.sent.at(-1);
+    expect(ask?.forceReply).toBe('GP-1042');
+    await bot.handleUpdate(replyTo(ask?.id ?? 0, ask?.text ?? '', order.orderNo));
+    expect(lastTextTo(ADMIN)).toContain(`${order.orderNo} · delivered`);
+
+    await bot.handleUpdate(tap('ad:ask:offer', 1));
+    const askOffer = tg.sent.at(-1);
+    await bot.handleUpdate(replyTo(askOffer?.id ?? 0, askOffer?.text ?? '', 'Last 12 links left'));
+    expect(await getOfferText(testDb.db)).toBe('last 12 links left');
+
+    // a buyer replying to anything never reaches these
+    await bot.handleUpdate(replyTo(askOffer?.id ?? 0, askOffer?.text ?? '', 'hello', BUYER));
+    expect(await getOfferText(testDb.db)).toBe('last 12 links left');
+  });
 });
+
+function tap(data: string, messageId: number, from = ADMIN): Update {
+  return {
+    update_id: updateId++,
+    callback_query: {
+      id: `q${updateId}`,
+      from: { id: from, is_bot: false, first_name: 'x' },
+      chat_instance: 'c',
+      data,
+      message: { message_id: messageId, date: 0, chat: { id: from, type: 'private', first_name: 'x' } },
+    },
+  } as Update;
+}
+
+function replyTo(messageId: number, askedText: string, text: string, from = ADMIN): Update {
+  return {
+    update_id: updateId++,
+    message: {
+      message_id: updateId,
+      date: 0,
+      chat: { id: from, type: 'private', first_name: 'x' },
+      from: { id: from, is_bot: false, first_name: 'x' },
+      text,
+      reply_to_message: {
+        message_id: messageId,
+        date: 0,
+        chat: { id: from, type: 'private', first_name: 'x' },
+        from: { id: botInfo.id, is_bot: true, first_name: 'b' },
+        text: askedText,
+      },
+    },
+  } as Update;
+}
