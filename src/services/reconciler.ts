@@ -10,7 +10,8 @@ import { deleteOldOrderDrafts, expireUnpaidOrders, holdPayment, markPaid, reserv
 import { paymentProblem, type PaymentProvider } from './payments.js';
 import type { ResellerClient } from './reseller.js';
 import { getSetting, setSetting } from './settings.js';
-import { activationLine, salesStats, watDateKey } from './stats.js';
+import { referralStats } from './referrals.js';
+import { activationLine, referralLine, salesStats, watDateKey } from './stats.js';
 
 // docs/ARCHITECTURE.md 7.4. Catches whatever the event driven paths missed: a sleeping service,
 // a lost webhook, a crash in the middle of fulfilment. Runs once at boot, then on timers.
@@ -27,6 +28,8 @@ export interface ReconcilerDeps {
   lowBalanceLinks: number;
   sendNudges: () => Promise<number>;
   sendReminders: () => Promise<number>;
+  /** Referral rewards held back earlier (paused, no stock). */
+  grantRewards?: () => Promise<number>;
   ordersEveryMs?: number;
   balanceEveryMs?: number;
   now?: () => Date;
@@ -135,11 +138,13 @@ export function createReconciler(deps: ReconcilerDeps) {
     if ((await getSetting<string>(db, 'last_daily_summary')) === today) return;
     await setSetting(db, 'last_daily_summary', today);
 
-    const [s, ai] = await Promise.all([salesStats(db, t), readUsage(db, t)]);
+    const [s, ai, refs] = await Promise.all([salesStats(db, t), readUsage(db, t), referralStats(db)]);
     let stock = 'reseller unreachable';
+    let linkPriceCents: number | undefined;
     try {
       const [balance, product] = await Promise.all([deps.reseller.getBalance(), deps.reseller.getProduct(deps.productId)]);
       const covers = product.priceCents > 0 ? Math.floor(balance.balanceCents / product.priceCents) : 0;
+      linkPriceCents = product.priceCents;
       stock = `balance $${(balance.balanceCents / 100).toFixed(2)}, covers ${covers} links, stock ${product.stock}`;
     } catch {
       // keep the placeholder
@@ -153,6 +158,7 @@ export function createReconciler(deps: ReconcilerDeps) {
         `reseller: ${stock}`,
         `total so far: ${s.total.orders} orders, ${s.total.links} links, ${naira(s.total.revenueNgn)}`,
         activationLine(s.activation),
+        referralLine(refs, linkPriceCents),
         `ai today: ${ai.calls} model calls (${ai.rateLimited} rate limited), ${ai.free} answered free, ${ai.fallbacks} scripted fallbacks`,
       ].join('\n'),
     });
@@ -167,6 +173,7 @@ export function createReconciler(deps: ReconcilerDeps) {
       await step('nudges', deps.sendNudges);
       await step('verify stale checkouts', verifyStale);
       await step('recover fulfilment', recover);
+      if (deps.grantRewards) await step('referral rewards', deps.grantRewards);
       await step('activation reminders', deps.sendReminders);
       await step('daily summary', dailySummary);
     } finally {

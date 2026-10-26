@@ -8,7 +8,7 @@ import { SYSTEM_PROMPT } from './prompt.js';
 // small JSON decision, code validates it and acts. The model never sees or writes activation
 // links, never confirms payments and cannot change prices: it only names an intent and a reply.
 
-export const INTENTS = ['buy', 'price', 'history', 'show_order', 'proof', 'help', 'owner', 'shop', 'support', 'lead', 'chat'] as const;
+export const INTENTS = ['buy', 'price', 'history', 'show_order', 'proof', 'help', 'owner', 'shop', 'support', 'lead', 'invite', 'chat'] as const;
 export type Intent = (typeof INTENTS)[number];
 
 /** What the model may ask about samkiel; 'shop' is its own intent. */

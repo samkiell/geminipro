@@ -453,7 +453,7 @@ export async function cancelOwnOrder(db: Db, telegramId: number, orderId: string
   return order;
 }
 
-function isUniqueViolation(err: unknown): boolean {
+export function isUniqueViolation(err: unknown): boolean {
   const code = (e: unknown) => (e as { code?: unknown } | undefined)?.code;
   return code(err) === '23505' || code((err as { cause?: unknown } | undefined)?.cause) === '23505';
 }

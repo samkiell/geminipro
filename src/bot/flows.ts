@@ -29,6 +29,7 @@ import {
 } from '../services/orders.js';
 import type { PaymentProvider } from '../services/payments.js';
 import { priceFor, type PricingConfig } from '../services/pricing.js';
+import { ensureRefCode, isReward, referralLink, referralProgress, type ReferralConfig } from '../services/referrals.js';
 import type { ResellerClient } from '../services/reseller.js';
 import { getOfferText, isPaused } from '../services/settings.js';
 import type { Logger } from '../util/logger.js';
@@ -43,6 +44,7 @@ import {
   helpHub,
   helpView,
   historyList,
+  inviteView,
   linkLabel,
   linksMessages,
   orderCard,
@@ -74,6 +76,8 @@ export interface FlowDeps {
   gateChannel?: string;
   gateChannelUrl?: string;
   adminUserIds?: readonly number[];
+  /** Referral program; without it /invite is not offered. */
+  referral?: ReferralConfig;
   /** Minimum gap between two edits of one status message. Default 1.2s. */
   statusThrottleMs?: number;
   /** Per buyer, "show my links". Default 5 a minute. */
@@ -170,8 +174,9 @@ export function createFlows(deps: FlowDeps) {
     if (order.statusMessageId) {
       const result = await port.edit(chat, order.statusMessageId, status);
       if (result === 'gone') await sendStatus(order, status);
-    } else if (order.paidAt) {
+    } else if (order.paidAt && !isReward(order)) {
       // Paid without a status message (say, an order replaced by the stepper and paid later).
+      // Free referral links have no checkout, so their delivery message is all the buyer needs.
       await sendStatus(order, status);
     }
   }
@@ -663,6 +668,22 @@ export function createFlows(deps: FlowDeps) {
     await sendOrEdit(telegramId, view, editMessageId);
   }
 
+  /** /invite and the [invite & earn 🎁] buttons: one message, edited in place when asked. */
+  async function showInvite(telegramId: number, editMessageId?: number): Promise<void> {
+    const referral = deps.referral;
+    if (!referral) return;
+    const [code, progress] = await Promise.all([ensureRefCode(db, telegramId), referralProgress(db, telegramId, referral)]);
+    const view = inviteView({
+      link: referralLink(referral.botUsername, code),
+      threshold: referral.threshold,
+      maxRewards: referral.maxRewards,
+      qualified: progress.qualified,
+      earned: progress.granted + progress.due,
+      capReached: progress.capReached,
+    });
+    await sendOrEdit(telegramId, view, editMessageId);
+  }
+
   async function showStart(telegramId: number, firstName: string | undefined): Promise<void> {
     const existing = await db.select({ id: orders.id }).from(orders).where(eq(orders.telegramId, telegramId)).limit(1);
     await port.send(telegramId, startMessage(firstName, facts, await getOfferText(db), existing.length > 0));
@@ -713,6 +734,7 @@ export function createFlows(deps: FlowDeps) {
     showLinks,
     showHelp,
     showStart,
+    showInvite,
     answerActivation,
     activationTap,
     orderChanged,

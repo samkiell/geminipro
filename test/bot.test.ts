@@ -10,6 +10,7 @@ import { createFlows, type Flows } from '../src/bot/flows.js';
 import { messages, users } from '../src/db/schema.js';
 import { buildServer } from '../src/server.js';
 import type { Alert } from '../src/services/notifier.js';
+import { ensureRefCode } from '../src/services/referrals.js';
 import { computeAvailability } from '../src/services/reseller.js';
 import { createLogger } from '../src/util/logger.js';
 import { createTestDb } from './helpers/db.js';
@@ -164,6 +165,23 @@ describe('commands', () => {
     expect(user).toMatchObject({ username: 'samkieldev', firstName: 'Sam', blocked: false });
   });
 
+  it('/start ref_<CODE> attributes a brand new user, case insensitively', async () => {
+    const code = await ensureRefCode(testDb.db, 7);
+    await makeBot().handleUpdate(message(`/start ref_${code.toUpperCase()}`));
+    const [user] = await testDb.db.select().from(users).where(eq(users.telegramId, BUYER));
+    expect(user?.referredBy).toBe(7);
+    expect(tg.sent[0]?.text).toContain('hey 👋');
+  });
+
+  it('/start ref_<code> from someone who already used the bot is ignored', async () => {
+    const code = await ensureRefCode(testDb.db, 7);
+    const bot = makeBot();
+    await bot.handleUpdate(message('/start'));
+    await bot.handleUpdate(message(`/start ref_${code}`));
+    const [user] = await testDb.db.select().from(users).where(eq(users.telegramId, BUYER));
+    expect(user?.referredBy).toBeNull();
+  });
+
   it('/buy 3 shows the draft card for 3', async () => {
     await makeBot().handleUpdate(message('/buy 3'));
     expect(tg.sent[0]?.text).toContain('how many links?');
@@ -186,8 +204,8 @@ describe('commands', () => {
     await bot.handleUpdate(message('/status'));
     await bot.handleUpdate(message('/balance'));
     expect(tg.textsTo(BUYER)).toEqual([
-      "i don't know that command. try /buy, /history or /help.",
-      "i don't know that command. try /buy, /history or /help.",
+      "i don't know that command. try /buy, /history, /invite or /help.",
+      "i don't know that command. try /buy, /history, /invite or /help.",
     ]);
   });
 });

@@ -8,7 +8,8 @@ import { findOrderByNo, recordLinkMessage, reservedUnits } from '../services/ord
 import type { ResellerClient } from '../services/reseller.js';
 import { activeProof, addProof, MAX_PROOF, removeProof } from '../services/proof.js';
 import { getOfferText, isPaused, setOfferText, setPaused } from '../services/settings.js';
-import { activationLine, salesStats } from '../services/stats.js';
+import { referralStats } from '../services/referrals.js';
+import { activationLine, referralLine, salesStats } from '../services/stats.js';
 import type { Logger } from '../util/logger.js';
 import type { Flows } from './flows.js';
 import type { Keyboard, OutMessage, TelegramPort } from './telegram.js';
@@ -99,12 +100,20 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
   }
 
   async function statsView(): Promise<string> {
-    const s = await salesStats(db);
+    const [s, refs, priceCents] = await Promise.all([
+      salesStats(db),
+      referralStats(db),
+      deps.reseller
+        .getProduct(deps.productId)
+        .then((p) => p.priceCents)
+        .catch(() => undefined),
+    ]);
     return [
       `today: ${s.today.orders} orders, ${s.today.links} links, ${naira(s.today.revenueNgn)}`,
       `total: ${s.total.orders} orders, ${s.total.links} links, ${naira(s.total.revenueNgn)}`,
       `in progress: ${s.inProgress} · failures: ${s.failures} · waiting for payment: ${s.pending}`,
       activationLine(s.activation),
+      referralLine(refs, priceCents),
     ].join('\n');
   }
 

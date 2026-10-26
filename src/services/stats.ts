@@ -1,6 +1,7 @@
 import { and, count, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { orderItems, orders } from '../db/schema.js';
+import type { ReferralStats } from './referrals.js';
 
 // Numbers for /stats and the daily summary. "Today" is the calendar day in WAT (UTC+1, no DST).
 
@@ -37,7 +38,8 @@ export interface SalesStats {
 }
 
 async function totals(db: Db, since?: Date): Promise<Totals> {
-  const conditions = [isNotNull(orders.paidAt), sql`${orders.status} <> 'refunded'`];
+  // Sales only: free referral links are reported on their own line.
+  const conditions = [isNotNull(orders.paidAt), sql`${orders.status} <> 'refunded'`, eq(orders.source, 'purchase')];
   if (since) conditions.push(gte(orders.paidAt, since));
   const [row] = await db
     .select({
@@ -65,6 +67,12 @@ async function activation(db: Db, now: Date): Promise<SalesStats['activation']> 
 export function activationLine(a: SalesStats['activation']): string {
   const rate = a.delivered > 0 ? ` (${Math.round((a.activated / a.delivered) * 100)}%)` : '';
   return `activated: ${a.activated} of ${a.delivered} delivered links${rate}, ${a.activatedToday} today`;
+}
+
+/** "referrals: 4 friends bought, 1 free link granted, cost 1 link ($1.20)". */
+export function referralLine(r: ReferralStats, linkPriceCents?: number): string {
+  const cost = linkPriceCents !== undefined ? ` ($${((r.rewardLinks * linkPriceCents) / 100).toFixed(2)})` : '';
+  return `referrals: ${r.qualified} friends bought, ${r.rewardsGranted} free ${r.rewardsGranted === 1 ? 'link' : 'links'} granted, cost ${r.rewardLinks} ${r.rewardLinks === 1 ? 'link' : 'links'}${cost}`;
 }
 
 export async function salesStats(db: Db, now = new Date()): Promise<SalesStats> {

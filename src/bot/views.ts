@@ -48,6 +48,8 @@ export const cb = {
   price: (quantity: number) => `pr:${quantity}`,
   proof: 'pf',
   invite: 'inv',
+  // Same, but edits the tapped message (help hub) instead of sending a new one.
+  inviteHere: 'inv:e',
   // One link: "i've activated it", then "yes" or "not yet".
   activate: (itemId: string) => `v:${itemId}`,
   activateYes: (itemId: string) => `v:y:${itemId}`,
@@ -233,7 +235,12 @@ export function summaryResolved(order: Pick<Order, 'orderNo'>, outcome: SummaryO
 export type StatusOrder = Pick<
   Order,
   'orderNo' | 'status' | 'quantity' | 'amountNgn' | 'paidAt' | 'deliveredAt' | 'createdAt'
->;
+> &
+  Partial<Pick<Order, 'source'>>;
+
+const isFree = (order: Partial<Pick<Order, 'source'>>) => order.source === 'referral_reward';
+const amountLine = (order: StatusOrder, facts: UiFacts, paid = '') =>
+  isFree(order) ? 'free referral link 🎁' : `${naira(order.amountNgn)}${paid}${facts.grossUp ? '' : ' + fee'}`;
 
 export function renderStatus(order: StatusOrder, facts: UiFacts): OutMessage {
   const q = order.quantity;
@@ -258,7 +265,7 @@ export function renderStatus(order: StatusOrder, facts: UiFacts): OutMessage {
     case 'delivered':
       text = tick(['✅', '✅', '✅', '✅', '✅'], [
         '',
-        `receipt: ${q} ${plural(q, 'link', 'links')} · ${naira(order.amountNgn)} paid${facts.grossUp ? '' : ' + fee'}`,
+        `receipt: ${q} ${plural(q, 'link', 'links')} · ${amountLine(order, facts, ' paid')}`,
         order.paidAt ? `paid ${watDateTime(order.paidAt)}` : '',
       ].filter(Boolean));
       break;
@@ -414,7 +421,7 @@ export function delayedMessage(order: Pick<Order, 'orderNo' | 'quantity'>, facts
 // ---------------------------------------------------------------- history and order card
 
 export type HistoryOrder = Pick<Order, 'id' | 'orderNo' | 'quantity' | 'status' | 'createdAt' | 'paidAt'> &
-  Partial<Pick<Order, 'activatedConfirmedAt'>>;
+  Partial<Pick<Order, 'activatedConfirmedAt' | 'source'>>;
 
 export function statusLabel(order: Pick<Order, 'status' | 'paidAt'> & Partial<Pick<Order, 'activatedConfirmedAt'>>): string {
   switch (order.status) {
@@ -448,7 +455,7 @@ export function historyList({ orders, page, hasNext }: { orders: HistoryOrder[];
   }
   const keyboard: Keyboard = orders.map((o) => [
     {
-      text: `${o.orderNo} · ${o.quantity} ${plural(o.quantity, 'link', 'links')} · ${watDate(o.createdAt)} · ${statusLabel(o)}`,
+      text: `${o.orderNo} · ${isFree(o) ? 'free link 🎁' : `${o.quantity} ${plural(o.quantity, 'link', 'links')}`} · ${watDate(o.createdAt)} · ${statusLabel(o)}`,
       data: cb.order(o.id, page),
     },
   ]);
@@ -484,7 +491,7 @@ export function orderCard({
     text: [
       renderStatus(order, facts).text,
       '',
-      `${order.quantity} ${plural(order.quantity, 'link', 'links')} · ${naira(order.amountNgn)}${facts.grossUp ? '' : ' + fee'}`,
+      `${order.quantity} ${plural(order.quantity, 'link', 'links')} · ${amountLine(order, facts)}`,
       `ordered ${watDateTime(order.createdAt)}`,
       ...(activatedLinks > 0 ? [`activated: ${activatedLinks} ${plural(activatedLinks, 'link', 'links')} ✅ (closed)`] : []),
     ].join('\n'),
@@ -499,8 +506,39 @@ export function helpHub(facts: UiFacts): OutMessage {
   const keyboard: Keyboard = [];
   for (let i = 0; i < topics.length; i += 2) keyboard.push(topics.slice(i, i + 2));
   keyboard.push([{ text: 'see proof', data: cb.proof }, { text: 'my orders', data: cb.history(1) }]);
-  keyboard.push([supportButton(facts, undefined, 'support')]);
+  keyboard.push([{ text: 'invite & earn 🎁', data: cb.inviteHere }, supportButton(facts, undefined, 'support')]);
   return { text: HELP_HUB_TEXT, keyboard };
+}
+
+// ---------------------------------------------------------------- invite (referral program)
+
+export interface InviteInput {
+  link: string;
+  threshold: number;
+  maxRewards: number;
+  qualified: number;
+  /** Free links earned so far. */
+  earned: number;
+  capReached: boolean;
+}
+
+export const INVITE_SHARE_TEXT = 'get google ai pro for 18 months, delivered on telegram 👇';
+
+export function inviteView({ link, threshold, maxRewards, qualified, earned, capReached }: InviteInput): OutMessage {
+  const share = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(INVITE_SHARE_TEXT)}`;
+  const inCycle = qualified % threshold;
+  const bar = '▰'.repeat(inCycle) + '▱'.repeat(threshold - inCycle);
+  const head = capReached
+    ? [`you've earned the most free links (${maxRewards}) 🎉 thanks for sharing.`, 'friends can still use your link.']
+    : [
+        `invite ${threshold} friends who buy a link and get 1 free link 🎁`,
+        `progress: ${bar} ${inCycle} of ${threshold} ${plural(threshold, 'friend has', 'friends have')} bought`,
+      ];
+  return {
+    text: [...head, `free links earned: ${earned}`, 'your link, tap to copy:', `<code>${escapeHtml(link)}</code>`].join('\n'),
+    html: true,
+    keyboard: [[{ text: 'share with friends', url: share }], [{ text: 'my orders', data: cb.history(1) }]],
+  };
 }
 
 // ---------------------------------------------------------------- price (no order yet)

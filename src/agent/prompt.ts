@@ -45,6 +45,7 @@ owner: samkiel and his work (topic: identity, roles, projects, achievements, ser
 shop: where links come from, who runs the shop
 support: problem, dead link, refund, complaint, wants a human
 lead: wants samkiel to build an app, site or bot (summary: a few words)
+invite: invite or refer friends, referral link, earn a free link
 chat: anything else
 
 reply: max 240 characters, 1 or 2 short lowercase casual sentences, in english unless they write pidgin, then light pidgin. no markdown, links, dashes, prices or totals: code shows cards, prices, orders and links. never confirm payments or promise anything not below.

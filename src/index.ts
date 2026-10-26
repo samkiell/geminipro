@@ -25,6 +25,7 @@ import { pricingFromConfig } from './services/pricing.js';
 import { createProof, seedProof } from './services/proof.js';
 import { createCountdownRunner } from './services/countdown.js';
 import { createReconciler } from './services/reconciler.js';
+import { createReferrals, type ReferralConfig } from './services/referrals.js';
 import { sendActivationReminders } from './services/reminders.js';
 import { createResellerClient } from './services/reseller.js';
 import { isPaused } from './services/settings.js';
@@ -94,6 +95,11 @@ async function main(): Promise<void> {
   );
   const reseller = createResellerClient(config, logger);
   const pricing = pricingFromConfig(config);
+  const referral: ReferralConfig = {
+    threshold: config.REFERRAL_THRESHOLD,
+    maxRewards: config.REFERRAL_MAX_REWARDS,
+    botUsername: config.TELEGRAM_BOT_USERNAME,
+  };
 
   const flows = createFlows({
     db,
@@ -109,6 +115,7 @@ async function main(): Promise<void> {
     gateChannel: config.GATE_CHANNEL,
     gateChannelUrl: config.GATE_CHANNEL_URL,
     adminUserIds: config.ADMIN_TELEGRAM_IDS,
+    referral,
   });
   const fulfilment = createFulfilment({
     db,
@@ -120,6 +127,17 @@ async function main(): Promise<void> {
     logger,
     confettiEffectId: config.MESSAGE_EFFECT_CONFETTI,
     onChange: flows.orderChanged,
+    // Late bound: referrals fulfil their rewards through this same engine.
+    onDelivered: (orderId) => referrals.orderDelivered(orderId),
+  });
+  const referrals = createReferrals({
+    db,
+    port,
+    logger,
+    notify,
+    reseller,
+    fulfil: (orderId) => fulfilment.fulfil(orderId),
+    config: referral,
   });
 
   const usage = createUsage({ db, notify, logger });
@@ -210,6 +228,7 @@ async function main(): Promise<void> {
     lowBalanceLinks: config.LOW_BALANCE_ORDERS,
     sendNudges: () => sendPaymentNudges({ db, port, facts, logger }),
     sendReminders: () => sendActivationReminders({ db, port, logger, delayMinutes: config.REMINDER_DELAY_MINUTES }),
+    grantRewards: () => referrals.grantPending(),
   });
 
   const countdown = createCountdownRunner({

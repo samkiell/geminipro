@@ -8,6 +8,7 @@ import type { Logger } from '../util/logger.js';
 import { Semaphore } from '../util/semaphore.js';
 import type { Notify } from './notifier.js';
 import { claimForFulfilment, finishFulfilment, recordLinkMessage, renewLease } from './orders.js';
+import { isReward } from './referrals.js';
 import { ResellerError, type ResellerClient } from './reseller.js';
 import { setPaused } from './settings.js';
 
@@ -26,6 +27,8 @@ export interface FulfilmentDeps {
   confettiEffectId?: string;
   /** Called after every status change, to keep the buyer's status message live. */
   onChange?: (orderId: string) => void;
+  /** Called once an order is fully delivered (referral qualification). */
+  onDelivered?: (orderId: string) => Promise<void>;
   /** Waits between tries of one link after out_of_stock, insufficient_funds or a supplier failure. */
   itemRetryDelaysMs?: number[];
 }
@@ -75,7 +78,6 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
   const deliveredBefore = bought.length - fresh.length;
 
   if (fresh.length > 0) {
-    const isReward = (order as { source?: string | null }).source === 'referral_reward';
     const parts = linksMessages({
       orderNo: order.orderNo,
       quantity: order.quantity,
@@ -83,7 +85,7 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
       mode: deliveredBefore === 0 ? 'first' : 'more',
       remaining,
       facts: deps.facts,
-      isReward,
+      isReward: isReward(order),
     });
     if (deliveredBefore === 0 && deps.confettiEffectId && parts[0]) {
       parts[0].messageEffectId = deps.confettiEffectId;
@@ -104,6 +106,7 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
   if (remaining === 0) {
     await finishFulfilment(db, orderId, 'delivered', null);
     log.info('order delivered');
+    await deps.onDelivered?.(orderId).catch((err: unknown) => log.error({ err }, 'after delivery hook failed'));
     return finish(deps, Promise.resolve('delivered'), orderId);
   }
 
@@ -121,10 +124,12 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
   await finishFulfilment(db, orderId, 'needs_attention', reason);
   deps.notify({
     level: 'critical',
-    title: 'paid order not fulfilled',
-    body: `Order ${order.orderNo} (${order.quantity} links) is paid but no link could be bought. ${reason}.`,
+    title: isReward(order) ? 'free referral link not sent yet' : 'paid order not fulfilled',
+    body: isReward(order)
+      ? `Referral reward ${order.orderNo} could not be bought yet. ${reason}. It will be retried.`
+      : `Order ${order.orderNo} (${order.quantity} links) is paid but no link could be bought. ${reason}.`,
   });
-  if (before?.status === 'paid') {
+  if (before?.status === 'paid' && !isReward(order)) {
     // First attempt only, so retries do not spam the buyer.
     await deps.port
       .send(order.telegramId, delayedMessage(order, deps.facts))

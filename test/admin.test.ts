@@ -125,7 +125,7 @@ describe('admin commands', () => {
     for (const cmd of ['/admin', '/balance', '/stats', '/allorders', '/order GP-1001', '/pause', '/offertext x', '/leads', '/replace GP-1001']) {
       await bot.handleUpdate(command(cmd, BUYER));
     }
-    expect(new Set(tg.textsTo(BUYER))).toEqual(new Set(["i don't know that command. try /buy, /history or /help."]));
+    expect(new Set(tg.textsTo(BUYER))).toEqual(new Set(["i don't know that command. try /buy, /history, /invite or /help."]));
     expect(await isPaused(testDb.db)).toBe(false);
     expect(await getOfferText(testDb.db)).toBe('offer ending very soon');
   });

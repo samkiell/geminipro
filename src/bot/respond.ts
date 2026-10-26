@@ -114,6 +114,10 @@ export function createResponder(deps: ResponderDeps) {
         await deps.reply(id, text, [[{ text: 'portfolio', url: OWNER_LINKS.portfolio }]]);
         return text;
       }
+      case 'invite':
+        // UI intent: show only the invite card.
+        await flows.showInvite(id);
+        return '[showed their invite link and progress]';
       case 'chat': {
         // Questions about the maker always get his links, even when the model just chatted.
         if (isOwnerQuestion(turn.userText)) return owner(turn, 'identity');
@@ -141,6 +145,9 @@ export function createResponder(deps: ResponderDeps) {
       case 'proof':
         await deps.proof.send(turn.telegramId);
         return '[sent the proof screenshots]';
+      case 'invite':
+        await flows.showInvite(turn.telegramId);
+        return '[showed their invite link and progress]';
       case 'cancel': {
         const text = (await flows.cancelPending(turn.telegramId)) ? 'done, your unpaid order is cancelled.' : "you don't have an unpaid order.";
         await deps.reply(turn.telegramId, text);

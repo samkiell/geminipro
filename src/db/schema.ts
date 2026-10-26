@@ -30,6 +30,9 @@ export const users = pgTable('users', {
   blocked: boolean('blocked').notNull().default(false),
   // 'en' or 'pcm' (Nigerian Pidgin), guessed from what they write.
   lang: text('lang', { enum: ['en', 'pcm'] }).notNull().default('en'),
+  // Referral program (Prompt D section 6): own 4 letter code, made on first use, and who invited them.
+  refCode: text('ref_code').unique(),
+  referredBy: bigint('referred_by', { mode: 'number' }),
 });
 
 // Human readable order numbers: GP-1001, GP-1002, ... (the uuid stays internal).
@@ -64,6 +67,8 @@ export const orders = pgTable(
     feeNgn: integer('fee_ngn').notNull().default(0),
     amountNgn: integer('amount_ngn').notNull(),
     status: orderStatus('status').notNull().default('created'),
+    // 'referral_reward': a free link earned by inviting friends (amount 0, never takes a payment).
+    source: text('source', { enum: ['purchase', 'referral_reward'] }).notNull().default('purchase'),
     // `gp_${id}`, sent to Bachs as the checkout reference
     paymentReference: text('payment_reference').notNull().unique(),
     checkoutId: text('checkout_id').unique(),
@@ -185,6 +190,25 @@ export const orderDrafts = pgTable('order_drafts', {
   messageId: integer('message_id'),
   updatedAt: timestamptz('updated_at').notNull().defaultNow(),
 });
+
+// One row per invited friend, made when they first /start with a referral code. qualified_at is set
+// when their first paid order is delivered, so a friend counts once however many links they buy.
+export const referrals = pgTable(
+  'referrals',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    referrerId: bigint('referrer_id', { mode: 'number' })
+      .notNull()
+      .references(() => users.telegramId),
+    referredId: bigint('referred_id', { mode: 'number' })
+      .notNull()
+      .unique()
+      .references(() => users.telegramId),
+    qualifiedAt: timestamptz('qualified_at'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => [index('referrals_referrer_id_idx').on(t.referrerId)],
+);
 
 export type User = typeof users.$inferSelect;
 export type Order = typeof orders.$inferSelect;

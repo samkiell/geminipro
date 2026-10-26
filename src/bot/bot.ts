@@ -12,6 +12,7 @@ import { users } from '../db/schema.js';
 import type { Notify } from '../services/notifier.js';
 import { findOwnOrder, UNPAID_OPEN } from '../services/orders.js';
 import { priceFor, type PricingConfig } from '../services/pricing.js';
+import { attributeReferral, parseRefPayload } from '../services/referrals.js';
 import type { Proof } from '../services/proof.js';
 import type { Logger } from '../util/logger.js';
 import type { Flows } from './flows.js';
@@ -19,7 +20,7 @@ import { createResponder } from './respond.js';
 import type { Keyboard, TelegramPort } from './telegram.js';
 import { priceView, STALE_BUTTON, type UiFacts } from './views.js';
 
-// Buyer side of the bot: four commands (/start /buy /history /help), button taps, and free text.
+// Buyer side of the bot: five commands (/start /buy /history /invite /help), button taps, and free text.
 // Free text costs at most one model call: the fast path and the cache answer common messages for
 // free, and the scripted fallback answers when no model is free. Visuals go through flows.
 
@@ -102,16 +103,22 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
     }
   });
 
+  // Updates from users seen for the first time: only their /start may carry a referral.
+  const firstContact = new WeakSet<Context>();
+
   // Keep the users row fresh. Hearing from someone means they have not blocked us.
   bot.use(async (ctx, next) => {
     if (ctx.from && !ctx.from.is_bot) {
-      await db
+      const [row] = await db
         .insert(users)
         .values({ telegramId: ctx.from.id, username: ctx.from.username ?? null, firstName: ctx.from.first_name })
         .onConflictDoUpdate({
           target: users.telegramId,
           set: { username: ctx.from.username ?? null, firstName: ctx.from.first_name, lastSeenAt: sql`now()`, blocked: false },
-        });
+        })
+        // xmax is 0 only for a freshly inserted row.
+        .returning({ inserted: sql<boolean>`(xmax = 0)` });
+      if (row?.inserted) firstContact.add(ctx);
     }
     await next();
   });
@@ -122,6 +129,11 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
 
   bot.command('start', async (ctx) => {
     await clearEphemeral(ctx.chat.id);
+    const code = parseRefPayload(ctx.match);
+    if (code) {
+      const result = await attributeReferral(db, ctx.chat.id, code, firstContact.has(ctx));
+      logger.info({ telegramId: ctx.chat.id, result }, 'referral start');
+    }
     await flows.showStart(ctx.chat.id, ctx.from?.first_name);
   });
   bot.command('buy', async (ctx) => {
@@ -131,6 +143,10 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
   bot.command('history', async (ctx) => {
     await clearEphemeral(ctx.chat.id);
     await flows.showHistory(ctx.chat.id, 1);
+  });
+  bot.command('invite', async (ctx) => {
+    await clearEphemeral(ctx.chat.id);
+    await flows.showInvite(ctx.chat.id);
   });
   bot.command('help', async (ctx) => {
     await clearEphemeral(ctx.chat.id);
@@ -243,6 +259,11 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
         await port.answer(queryId);
         await deps.proof.send(telegramId);
         return;
+      case 'inv':
+        // From a delivery message: a new message, so the links stay. From the help hub: edit it.
+        await port.answer(queryId);
+        await flows.showInvite(telegramId, a === 'e' ? messageId : undefined);
+        return;
       case 'v': {
         // v:<itemId> asks to confirm, v:y:<itemId> closes the link, v:n:<itemId> backs out.
         const step = a === 'y' ? 'yes' : a === 'n' ? 'no' : 'ask';
@@ -261,7 +282,7 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
     const username = ctx.from.username;
     const userText = ctx.message.text.slice(0, MAX_USER_TEXT);
     if (userText.startsWith('/')) {
-      await port.send(telegramId, { text: "i don't know that command. try /buy, /history or /help." });
+      await port.send(telegramId, { text: "i don't know that command. try /buy, /history, /invite or /help." });
       return;
     }
 

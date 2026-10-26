@@ -17,6 +17,7 @@ export type ScriptedAction =
   | { kind: 'cancel' }
   /** The proof album. */
   | { kind: 'proof' }
+  | { kind: 'invite' }
   /** Saves the message as a lead for samkiel, then replies. */
   | { kind: 'lead'; text: string; keyboard: Keyboard }
   | { kind: 'reply'; text: string; keyboard?: Keyboard };
@@ -95,6 +96,7 @@ export function scriptedTurn(userText: string, c: ScriptedContext): ScriptedActi
   const orderNo = /\bgp-?\s?(\d{3,7})\b/.exec(t);
   if (orderNo) return { kind: 'order', orderNo: `GP-${orderNo[1]}` };
 
+  if (/\b(invite|refer|referral)\b/.test(t)) return { kind: 'invite' };
   if (/\b(cancel|stop (the |my )?order|don'?t want (it|again|am)|no longer want)\b/.test(t)) return { kind: 'cancel' };
 
   if (/\b(build|make|design|develop|create)\b.*\b(app|website|site|webapp|bot|landing page|software|platform|store)\b/.test(t) || /\b(hire (him|you|samkiel)|freelanc)/.test(t)) {

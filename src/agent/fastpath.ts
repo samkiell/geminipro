@@ -23,6 +23,7 @@ const BUY_N = /^(?:buy|i want|i need) (\d{1,2})(?: links?)?$/;
 const HISTORY = /^(history|my orders?|orders|order history|my links?|my link please|where is my link|where's my link|wheres my link|my receipt)$/;
 const PROOF_WORDS = /\b(proof|real|legit|scam|scammer|trust|trusted|genuine|fake|original|does it work|is it working|is this working)\b/;
 const HELP = /^(help|menu|options|commands|help me)$/;
+const INVITE = /^(invite|refer|referral|referrals|my referral link|referral link|invite link|invite friends|refer a friend|earn|free link)$/;
 const SUPPORT = /^(support|customer care|customer service|contact|contact support|whatsapp|agent|human|talk to a human|talk to someone|talk to a person)$/;
 
 const decision = (intent: Decision['intent'], extra: Partial<Decision> = {}): Decision => ({
@@ -49,6 +50,7 @@ export function fastPath(text: string, lang: Lang, pick: (options: readonly stri
   if (many) return decision('buy', { quantity: Number(many[1]) });
   if (HISTORY.test(t)) return decision('history');
   if (HELP.test(t)) return decision('help');
+  if (INVITE.test(t)) return decision('invite');
   if (SUPPORT.test(t)) return decision('support');
   // Doubt is a short question; a long message about it deserves the model.
   if (PROOF_WORDS.test(t) && t.split(' ').length <= 6) return decision('proof');

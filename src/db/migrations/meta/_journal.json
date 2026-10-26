@@ -57,6 +57,13 @@
       "when": 1793014716805,
       "tag": "0007_nasty_jack_flag",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793033660370,
+      "tag": "0008_referrals",
+      "breakpoints": true
     }
   ]
 }

@@ -1,11 +1,12 @@
-// The command menus Telegram shows (registered by `pnpm webhook:set`). Buyers see exactly four;
+// The command menus Telegram shows (registered by `pnpm webhook:set`). Buyers see exactly five;
 // admins also see the admin list, in their own chats only.
 
 export const BUYER_COMMANDS = [
+  { command: 'start', description: 'restart the bot' },
   { command: 'buy', description: 'get a gemini pro link' },
   { command: 'history', description: 'your orders and links' },
+  { command: 'invite', description: 'invite friends, earn free links' },
   { command: 'help', description: 'how it works and support' },
-  { command: 'start', description: 'restart the bot' },
 ];
 
 export const ADMIN_COMMANDS = [
