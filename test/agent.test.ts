@@ -1,204 +1,159 @@
-import type { ChatCompletion } from 'groq-sdk/resources/chat/completions';
-import { describe, expect, it } from 'vitest';
-import { cleanReply, nudgeTemplate, runAgent, writeNudge } from '../src/agent/agent.js';
-import { ModelPool, type CompletionParams, type LlmTransport } from '../src/agent/llm.js';
-import { systemPrompt } from '../src/agent/prompt.js';
-import { createTools, type AgentActions, type ToolContext } from '../src/agent/tools.js';
-import { OWNER, OWNER_BLURB } from '../src/knowledge/owner.js';
+import Groq from 'groq-sdk';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { cleanReply, clip, decide, parseDecision, trimHistory, type ChatTurn } from '../src/agent/decide.js';
+import { groqTransport, ModelPool, type CallRecord } from '../src/agent/llm.js';
+import { contextBlock, SYSTEM_PROMPT } from '../src/agent/prompt.js';
+import { OWNER_BLURB } from '../src/knowledge/owner.js';
 import { createLogger } from '../src/util/logger.js';
+import { decisionJson, startMockGroq, type MockGroq } from './mocks/groq-server.js';
+
+// The single call decision contract (Prompt C), through the real groq-sdk against a mock server.
 
 const logger = createLogger({ level: 'silent' });
+const facts = { unitPriceNgn: 3500, grossUp: false, supportLocal: '08087357158', maxQtyPerOrder: 10 };
+const context = contextBlock(facts, {
+  offerText: 'offer ending very soon',
+  availability: { canSell: true, maxQuantity: 10 },
+  buyer: 'buyer: tunde, new, no orders yet. writes english.',
+});
 
-function completion(message: Record<string, unknown>): ChatCompletion {
-  return {
-    id: 'c',
-    object: 'chat.completion',
-    created: 0,
-    model: 'm',
-    choices: [{ index: 0, finish_reason: 'stop', logprobs: null, message: { role: 'assistant', content: '', ...message } }],
-  } as unknown as ChatCompletion;
-}
-const answer = (content: string) => completion({ content });
-const toolCall = (name: string, args: unknown, id = 'call_1') =>
-  completion({ content: '', tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
+let groq: MockGroq;
+let calls: CallRecord[];
 
-function scriptedPool(steps: (ChatCompletion | Error)[], models = ['openai/gpt-oss-120b']) {
-  const requests: CompletionParams[] = [];
-  const transport: LlmTransport = {
-    async create(params) {
-      requests.push(structuredClone(params));
-      const step = steps.shift();
-      if (!step) throw new Error('script ran out');
-      if (step instanceof Error) throw step;
-      return { completion: step, headers: new Headers() };
-    },
-  };
-  return { pool: new ModelPool(transport, models, { logger }), requests };
+beforeEach(async () => {
+  groq = await startMockGroq();
+  calls = [];
+});
+afterEach(async () => {
+  await groq.close();
+});
+
+function pool(models = ['fast', 'smart', 'spare'], timeoutMs = 6_000) {
+  const client = new Groq({ apiKey: 'test-key', baseURL: groq.url, maxRetries: 0 });
+  return new ModelPool(groqTransport(client), models, { logger, timeoutMs, onCall: (c) => calls.push(c) });
 }
 
-function fakeActions() {
-  const calls: { name: string; args: unknown[] }[] = [];
-  const record = (name: string, ...args: unknown[]) => calls.push({ name, args });
-  const actions: AgentActions = {
-    getPrice: (quantity) => ({ quantity, baseNgn: 3500 * quantity, feeNgn: 0, totalNgn: 3500 * quantity, feeNote: 'fee at checkout' }),
-    checkAvailability: async () => ({ canSell: true, maxQuantity: 10 }),
-    buy: async (telegramId, quantity) => {
-      record('buy', telegramId, quantity);
-      return { ok: true, orderNo: 'GP-1001', quantity, totalNgn: 3500 * quantity, maxQuantity: 10 };
-    },
-    showHistory: async (telegramId) => void record('showHistory', telegramId),
-    showOrder: async (telegramId, orderNo) => (record('showOrder', telegramId, orderNo), orderNo === 'GP-1001'),
-    cancelPending: async (telegramId) => (record('cancelPending', telegramId), true),
-    escalate: async (telegramId, username, reason) => void record('escalate', telegramId, username, reason),
-    saveLead: async (telegramId, username, summary) => (record('saveLead', telegramId, username, summary), 'saved'),
-    supportLocal: '08087357158',
-    supportUrl: 'https://wa.me/2348087357158?text=hi',
-  };
-  return { actions, calls };
-}
+const ask = (p: ModelPool, userText: string, history: ChatTurn[] = []) => decide(p, { context, history, userText });
 
-const ctx = (): ToolContext => ({ telegramId: 42, username: 'sam', attachments: [] });
+describe('decide: one call, one JSON decision', () => {
+  it('a valid decision comes back cleaned, from one call with the static prompt first and the context last', async () => {
+    groq.respond(() => ({ content: decisionJson({ intent: 'buy', quantity: 3, reply: 'sure — 3 links coming up, see https://x.test' }) }));
+    const history: ChatTurn[] = Array.from({ length: 9 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `${i}:${'x'.repeat(300)}` }));
+    const result = await ask(pool(), 'i need 3 links', history);
 
-async function run(steps: (ChatCompletion | Error)[], options: { models?: string[]; userText?: string; toolCtx?: ToolContext } = {}) {
-  const { actions, calls } = fakeActions();
-  const { pool, requests } = scriptedPool(steps, options.models);
-  const toolCtx = options.toolCtx ?? ctx();
-  const reply = await runAgent(
-    { pool, tools: createTools(actions, { maxQtyPerOrder: 10 }), logger },
-    { systemPrompt: 'system', history: [], userText: options.userText ?? 'hi', ctx: toolCtx },
-  );
-  return { reply, calls, requests, toolCtx };
-}
-
-describe('runAgent', () => {
-  it('runs a tool, feeds the result back and returns the cleaned answer', async () => {
-    const { reply, requests } = await run([toolCall('get_price', { quantity: 3 }), answer('3 links come to ₦10,500 — nice **deal** https://evil.example')]);
-    expect(reply).toMatchObject({ failed: false, text: '3 links come to ₦10,500, nice deal', model: 'openai/gpt-oss-120b' });
-    expect(JSON.parse(String((requests[1]?.messages.at(-1) as { content: string }).content))).toMatchObject({ totalNgn: 10_500 });
+    expect(result).toMatchObject({ ok: true, model: 'fast', decision: { intent: 'buy', quantity: 3, reply: 'sure, 3 links coming up, see' } });
+    expect(groq.requests).toHaveLength(1);
+    const [req] = groq.requests;
+    expect(req?.messages[0]).toEqual({ role: 'system', content: SYSTEM_PROMPT });
+    expect(req?.messages.at(-2)).toEqual({ role: 'system', content: `context:\n${context}` });
+    expect(req?.messages.at(-1)).toEqual({ role: 'user', content: 'i need 3 links' });
+    // last 6 messages of history, each cut to 200 characters
+    const past = req?.messages.slice(1, -2) ?? [];
+    expect(past).toHaveLength(6);
+    expect(past.every((m) => m.content.length <= 200)).toBe(true);
+    expect(req).toMatchObject({ temperature: 0.3, response_format: { type: 'json_object' } });
+    expect(req?.tools).toBeUndefined();
+    expect(calls).toEqual([{ model: 'fast', ok: true, latencyMs: expect.any(Number), promptTokens: 700, completionTokens: 60 }]);
   });
 
-  it('sends the tools with temperature 0.4, 300 tokens and low reasoning effort', async () => {
-    const { requests } = await run([answer('hi')]);
-    expect(requests[0]).toMatchObject({ temperature: 0.4, max_tokens: 300, tool_choice: 'auto', reasoning_effort: 'low' });
-    expect(requests[0]?.tools?.map((t) => t.function?.name).sort()).toEqual([
-      'cancel_pending_order',
-      'check_availability',
-      'create_payment_link',
-      'escalate_to_support',
-      'get_owner_info',
-      'get_price',
-      'save_lead',
-      'show_history',
-      'show_order',
-    ]);
-    expect(JSON.stringify(requests[0]?.tools)).not.toMatch(/telegram/i);
+  it('invalid JSON, an unknown intent or an empty chat reply means the scripted fallback', async () => {
+    const p = pool();
+    groq.respond(() => ({ content: 'sure! how many links do you want?' }));
+    expect(await ask(p, 'hi')).toEqual({ ok: false, failure: 'invalid' });
+    groq.respond(() => ({ content: decisionJson({ intent: 'refund_everyone' }) }));
+    expect(await ask(p, 'hi')).toEqual({ ok: false, failure: 'invalid' });
+    groq.respond(() => ({ content: decisionJson({ intent: 'chat', reply: '   ' }) }));
+    expect(await ask(p, 'hi')).toEqual({ ok: false, failure: 'invalid' });
   });
 
-  it('create_payment_link shows the card for the user in the update, once per turn, and returns no url', async () => {
-    const { reply, calls, requests, toolCtx } = await run([
-      toolCall('create_payment_link', { quantity: 2, telegram_id: 999 }),
-      toolCall('create_payment_link', { quantity: 2 }, 'call_2'),
-      answer('done, tap pay on the card above.'),
-    ]);
-    expect(calls).toEqual([{ name: 'buy', args: [42, 2] }]);
-    expect(toolCtx.cardShown).toMatchObject({ ok: true, orderNo: 'GP-1001' });
-    expect(reply.toolCalls[0]?.result).toEqual({ shown: true, orderNo: 'GP-1001', quantity: 2, totalNgn: 7000, feeNote: 'fee at checkout' });
-    expect(reply.toolCalls[1]?.result).toMatchObject({ shown: true, note: 'the order card is already in the chat' });
-    expect(JSON.stringify(requests)).not.toMatch(/https?:\/\//);
+  it('a 429 rests that model for its retry-after and the next model answers at once', async () => {
+    groq.respond((req) => (req.model === 'fast' ? { status: 429, headers: { 'retry-after': '30' } } : { content: decisionJson({}) }));
+    const p = pool();
+    expect(await ask(p, 'hello there friend')).toMatchObject({ ok: true, model: 'smart' });
+    expect(p.usable()).toEqual(['smart', 'spare']);
+    // cooling down: the next message does not touch the resting model at all
+    expect(await ask(p, 'hello again friend')).toMatchObject({ ok: true, model: 'smart' });
+    expect(groq.requests.map((r) => r.model)).toEqual(['fast', 'smart', 'smart']);
+    expect(calls.filter((c) => c.status === 429)).toHaveLength(1);
   });
 
-  it('history and order tools render in code and return only whether they showed', async () => {
-    const { reply, calls } = await run([
-      toolCall('show_history', {}),
-      toolCall('show_order', { orderNo: 'GP-1001' }, 'c2'),
-      toolCall('show_order', { orderNo: 'GP-9' }, 'c3'),
-      answer('here you go'),
-    ]);
-    expect(reply.toolCalls.map((c) => c.result)).toEqual([{ shown: true }, { shown: true }, { shown: false, error: 'order_not_found' }]);
-    expect(calls.map((c) => c.name)).toEqual(['showHistory', 'showOrder', 'showOrder']);
+  it('a model slower than the timeout loses to the next one', async () => {
+    groq.respond((req) => (req.model === 'fast' ? { delayMs: 400, then: { content: decisionJson({}) } } : { content: decisionJson({ reply: 'from smart' }) }));
+    const result = await ask(pool(['fast', 'smart'], 150), 'hello there friend');
+    expect(result).toMatchObject({ ok: true, model: 'smart', decision: { reply: 'from smart' } });
   });
 
-  it('owner info and support attach url buttons; leads are saved', async () => {
-    const { reply, toolCtx, calls } = await run([
-      toolCall('get_owner_info', { topic: 'identity' }),
-      toolCall('escalate_to_support', { reason: 'dead link' }, 'c2'),
-      toolCall('save_lead', { summary: 'wants a website for a bakery' }, 'c3'),
-      answer('i was built by samkiel. tap below.'),
-    ]);
-    expect((reply.toolCalls[0]?.result as { text: string }).text).toBe(OWNER.identity.join('\n'));
-    expect(toolCtx.attachments.flat().map((b) => b.text)).toEqual(['portfolio', 'github', 'linkedin', 'whatsapp support']);
-    expect(calls.map((c) => c.name)).toEqual(['escalate', 'saveLead']);
-  });
-
-  it('returns invalid tool arguments to the model instead of acting on them', async () => {
-    const { reply, calls } = await run([toolCall('create_payment_link', { quantity: 'lots' }), answer('how many?')]);
-    expect(calls).toEqual([]);
-    expect(reply.toolCalls[0]?.result).toMatchObject({ error: 'invalid_arguments' });
-  });
-
-  it('a rate limited model hands over to the next one', async () => {
-    const limited = Object.assign(new Error('429'), { status: 429, headers: { 'retry-after': '30' } });
-    const { reply, requests } = await run([limited, answer('hi from the fallback')], { models: ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b'] });
-    expect(reply).toMatchObject({ failed: false, model: 'qwen/qwen3.8-27b' });
-    expect(requests.map((r) => r.model)).toEqual(['openai/gpt-oss-120b', 'qwen/qwen3.8-27b']);
-    expect(requests[1]).toMatchObject({ reasoning_format: 'hidden' });
-  });
-
-  it('fails fast with the reason when every model is rate limited', async () => {
-    const limited = () => Object.assign(new Error('429'), { status: 429, headers: { 'retry-after': '30' } });
-    const { reply } = await run([limited(), limited()], { models: ['a', 'b'] });
-    expect(reply).toMatchObject({ failed: true, failure: 'rate_limited', text: '' });
-  });
-
-  it('stops after 5 tool rounds and asks for a final answer without tools', async () => {
-    const rounds = Array.from({ length: 5 }, (_, i) => toolCall('check_availability', {}, `call_${i}`));
-    const { reply, requests } = await run([...rounds, answer('we have stock.')]);
-    expect(reply.text).toBe('we have stock.');
-    expect(requests).toHaveLength(6);
-    expect(requests[5]?.tool_choice).toBe('none');
+  it('at most two models per message; then rate_limited, and no call at all while they rest', async () => {
+    groq.respond(() => ({ status: 429, headers: { 'retry-after': '60' } }));
+    const p = pool();
+    expect(await ask(p, 'hello there friend')).toEqual({ ok: false, failure: 'rate_limited' });
+    expect(groq.requests.map((r) => r.model)).toEqual(['fast', 'smart']);
+    // 'spare' is still free, so a second message tries it
+    expect(await ask(p, 'hello again')).toEqual({ ok: false, failure: 'rate_limited' });
+    expect(groq.requests.map((r) => r.model)).toEqual(['fast', 'smart', 'spare']);
+    // now all three rest: no request is made
+    expect(await ask(p, 'and again')).toEqual({ ok: false, failure: 'rate_limited' });
+    expect(groq.requests).toHaveLength(3);
   });
 });
 
-describe('cleanReply', () => {
-  it('replaces dashes, removes urls and markdown', () => {
+describe('parseDecision', () => {
+  it('accepts a fenced object, numbers as strings, and drops unknown topics', () => {
+    const raw = '```json\n{"intent":"owner","quantity":"2","order_no":" GP-1042 ","topic":"secrets","summary":"","reply":"he builds apps"}\n```';
+    expect(parseDecision(raw)).toEqual({ intent: 'owner', quantity: 2, orderNo: 'GP-1042', topic: null, summary: null, reply: 'he builds apps' });
+    expect(parseDecision('{"intent":"price"}')).toBeUndefined(); // no reply
+    expect(parseDecision(null)).toBeUndefined();
+  });
+
+  it('replies are lowercase whatever the model sends, brand and order numbers aside', () => {
+    expect(parseDecision(JSON.stringify(decisionJson({ reply: 'Samkiel is CEO of SAMKIEL in Nigeria, see GP-1042' })))?.reply).toBe(
+      'samkiel is ceo of SAMKIEL in nigeria, see GP-1042',
+    );
+  });
+
+  it('replies are cut to 240 characters, after a sentence when possible', () => {
+    const long = `${'a'.repeat(150)}. ${'b'.repeat(200)}`;
+    expect(clip(long)).toBe(`${'a'.repeat(150)}.`);
+    expect(clip('word '.repeat(80)).length).toBeLessThanOrEqual(240);
     expect(cleanReply('sure — here: https://x.y/z and www.example.com ok')).toBe('sure, here: and ok');
     expect(cleanReply('1–2 days, **tap** `pay`')).toBe('1-2 days, tap pay');
   });
-});
 
-describe('writeNudge', () => {
-  const order = { quantity: 2, totalNgn: 7000, minutesLeft: 4 };
-
-  it('uses the model text, cleaned', async () => {
-    const { pool } = scriptedPool([answer('your 2 links are still waiting — tap pay when ready')]);
-    expect(await writeNudge(pool, order)).toBe('your 2 links are still waiting, tap pay when ready');
-  });
-
-  it('falls back to the template when the model fails or no model is free', async () => {
-    const { pool } = scriptedPool([new Error('down')]);
-    expect(await writeNudge(pool, order)).toBe(nudgeTemplate(order));
-    expect(nudgeTemplate(order)).toBe(
-      'quick reminder, the payment for your 2 gemini pro links (₦7,000) is still open for about 4 minutes. tap pay below, or ask me anything.',
-    );
+  it('history keeps the last 6 messages, 200 characters each', () => {
+    const history = Array.from({ length: 10 }, (_, i) => ({ role: 'user' as const, content: `${i}`.repeat(500) }));
+    expect(trimHistory(history).map((t) => [t.content[0], t.content.length])).toEqual([
+      ['4', 200],
+      ['5', 200],
+      ['6', 200],
+      ['7', 200],
+      ['8', 200],
+      ['9', 200],
+    ]);
   });
 });
 
-describe('system prompt', () => {
-  const facts = { unitPriceNgn: 3500, grossUp: false, supportLocal: '08087357158', maxQtyPerOrder: 10 };
-
-  it('carries the offer text, the owner blurb and the buyer, and never a date', () => {
-    const prompt = systemPrompt(facts, { offerText: 'offer ending very soon', buyer: 'buyer: tunde, returning, 2 paid orders. writes pidgin.' });
-    expect(prompt).toContain('offer: offer ending very soon.');
-    expect(prompt).toContain(OWNER_BLURB);
-    expect(prompt).toContain('buyer: tunde, returning');
-    expect(prompt).toMatch(/if the buyer writes pidgin \(.*\), reply in light pidgin/);
-    expect(prompt).toContain('always under 300 characters');
-    expect(prompt).toContain('replaced where possible, as soon as reported, but a replacement is not guaranteed');
-    expect(prompt).not.toMatch(/\b20\d\d\b|29 oct|vpn/i);
-    expect(prompt).not.toMatch(/[–—]/);
-  });
-
-  it('the owner blurb stays under 80 words', () => {
+describe('prompt', () => {
+  it('the static prompt is small, honest, has no prices or dates, and keeps the owner blurb', () => {
+    expect(SYSTEM_PROMPT.length).toBeLessThan(2_400); // about 600 tokens
+    expect(SYSTEM_PROMPT).toContain(OWNER_BLURB);
+    expect(SYSTEM_PROMPT).toContain('never claim to be samkiel, google or jio, or that the shop is official or affiliated with them');
+    expect(SYSTEM_PROMPT).toContain('replaced where possible, not guaranteed');
+    expect(SYSTEM_PROMPT).toContain('in english unless they write pidgin, then light pidgin');
+    expect(SYSTEM_PROMPT).not.toMatch(/₦|\b20\d\d\b|29 oct|vpn|card 2%|1\.5%/i);
+    expect(SYSTEM_PROMPT).not.toMatch(/[–—]/);
     expect(OWNER_BLURB.split(/\s+/).length).toBeLessThanOrEqual(80);
+  });
+
+  it('the context block carries price, stock, offer and the buyer, last and short', () => {
+    expect(context).toBe(
+      [
+        'price: ₦3,500 + fee per link, up to 10 per order.',
+        'stock: can sell up to 10 now. offer: offer ending very soon.',
+        'support: whatsapp 08087357158.',
+        'buyer: tunde, new, no orders yet. writes english.',
+      ].join('\n'),
+    );
+    const soldOut = contextBlock(facts, { offerText: 'x', availability: { canSell: false, maxQuantity: 0, reason: 'sales are paused' }, buyer: '' });
+    expect(soldOut).toContain('cannot sell right now (sales are paused)');
   });
 });

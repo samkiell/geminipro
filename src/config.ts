@@ -63,8 +63,13 @@ const envSchema = z.object({
   RESELLER_MOCK_URL: z.url().default('http://127.0.0.1:4010/api/reseller/v1'),
 
   GROQ_API_KEY: z.string(),
-  GROQ_MODEL: z.string().default('openai/gpt-oss-120b'),
-  GROQ_FALLBACK_MODELS: csv().default([]),
+  // Best first (qwen passed every eval check, at about 0.9s a call). Each model has its own rate
+  // limits, so a 429 on one moves straight to the next.
+  GROQ_MODELS: csv()
+    .pipe(z.array(z.string()).min(1, 'expected at least one model'))
+    .default(['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b']),
+  /** Model calls at once across all buyers; a few more wait briefly, the rest get scripted replies. */
+  LLM_CONCURRENCY: int().positive().default(6),
 
   DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'expected a postgres:// connection string'),
 

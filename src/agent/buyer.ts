@@ -29,6 +29,11 @@ export async function noteLanguage(db: Db, telegramId: number, text: string): Pr
 
 /** e.g. "buyer: tunde, returning, 2 paid orders, last GP-1042 delivered 26 oct. writes pidgin." */
 export async function buyerContext(db: Db, telegramId: number): Promise<string> {
+  return (await buyerMemory(db, telegramId)).line;
+}
+
+/** The buyer line, and their first name (so a reply that names them is never cached). */
+export async function buyerMemory(db: Db, telegramId: number): Promise<{ line: string; firstName: string | null }> {
   const [user] = await db
     .select({ firstName: users.firstName, lang: users.lang })
     .from(users)
@@ -46,5 +51,8 @@ export async function buyerContext(db: Db, telegramId: number): Promise<string> 
     paid.length === 0
       ? 'new, no orders yet'
       : `returning, ${paid.length} paid order${paid.length === 1 ? '' : 's'}, last ${last?.orderNo} ${last?.status.replace('_', ' ')} ${last ? watDate(last.createdAt) : ''}`;
-  return `buyer: ${name}, ${history}. writes ${user?.lang === 'pcm' ? 'pidgin' : 'english'}.`;
+  return {
+    line: `buyer: ${name}, ${history}. writes ${user?.lang === 'pcm' ? 'pidgin' : 'english'}.`,
+    firstName: user?.firstName ?? null,
+  };
 }

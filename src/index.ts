@@ -1,13 +1,12 @@
+import { fileURLToPath } from 'node:url';
 import { autoRetry } from '@grammyjs/auto-retry';
 import { Bot } from 'grammy';
 import Groq from 'groq-sdk';
-import { createAgentActions } from './agent/actions.js';
-import { writeNudge } from './agent/agent.js';
+import { createBrain } from './agent/brain.js';
 import { groqTransport, ModelPool } from './agent/llm.js';
 import { sendPaymentNudges } from './agent/nudge.js';
 import { promptFacts } from './agent/prompt.js';
-import { createTools } from './agent/tools.js';
-import { createAgentTurn } from './agent/turn.js';
+import { createUsage } from './agent/usage.js';
 import { registerAdmin } from './bot/admin.js';
 import { registerBot } from './bot/bot.js';
 import { createFlows } from './bot/flows.js';
@@ -21,11 +20,13 @@ import { BachsClient, BachsProvider } from './services/bachs.js';
 import { createFulfilment } from './services/fulfilment.js';
 import { saveLead } from './services/leads.js';
 import { createNotifier, type Notify } from './services/notifier.js';
-import { PAYMENT_WINDOW_MINUTES } from './services/orders.js';
+import { PAYMENT_WINDOW_MINUTES, reservedUnits } from './services/orders.js';
 import { pricingFromConfig } from './services/pricing.js';
+import { createProof, seedProof } from './services/proof.js';
 import { createReconciler } from './services/reconciler.js';
 import { sendActivationReminders } from './services/reminders.js';
 import { createResellerClient } from './services/reseller.js';
+import { isPaused } from './services/settings.js';
 import { createLogger, type Logger } from './util/logger.js';
 import { withTimeout } from './util/time.js';
 
@@ -116,31 +117,41 @@ async function main(): Promise<void> {
     onChange: flows.orderChanged,
   });
 
-  const pool = new ModelPool(
-    groqTransport(new Groq({ apiKey: config.GROQ_API_KEY })),
-    [...new Set([config.GROQ_MODEL, ...config.GROQ_FALLBACK_MODELS])],
-    { logger },
-  );
-  const tools = createTools(
-    createAgentActions({
-      db,
-      flows,
-      reseller,
-      pricing,
-      salesCutoff: config.SALES_CUTOFF,
-      supportIntl: facts.supportIntl,
-      supportLocal: facts.supportLocal,
-      notify,
-    }),
-    { maxQtyPerOrder: config.MAX_QTY_PER_ORDER },
-  );
+  const usage = createUsage({ db, notify, logger });
+  const pool = new ModelPool(groqTransport(new Groq({ apiKey: config.GROQ_API_KEY })), [...new Set(config.GROQ_MODELS)], {
+    logger,
+    maxInFlight: config.LLM_CONCURRENCY,
+    onCall: usage.call,
+  });
+  const brain = createBrain({
+    db,
+    pool,
+    facts: promptFacts(config),
+    // Facts for the prompt, from the reseller client's 10 second cache.
+    availability: async () => {
+      if (await isPaused(db)) return { canSell: false, maxQuantity: 0, reason: 'sales are paused' };
+      if (config.SALES_CUTOFF && new Date() >= config.SALES_CUTOFF) return { canSell: false, maxQuantity: 0, reason: 'sales have closed' };
+      return reseller.getAvailability(await reservedUnits(db));
+    },
+  });
+  const proofDir = fileURLToPath(new URL('../assets/proof', import.meta.url));
+  const proof = createProof({ db, port, facts, notify, logger, dir: proofDir });
+  const seeded = await seedProof(db, proofDir).catch((err: unknown) => {
+    logger.warn({ err }, 'proof screenshots not seeded');
+    return 0;
+  });
+  if (seeded > 0) logger.info({ seeded }, 'proof screenshots added from assets/proof');
+
   registerBot(bot, {
     db,
     logger,
     port,
     flows,
     facts,
-    agent: createAgentTurn({ db, pool, tools, facts: promptFacts(config), logger }),
+    pricing,
+    brain,
+    proof,
+    usage,
     saveLead: (telegramId, username, summary) => saveLead(db, notify, { telegramId, username, summary }),
     notify,
     registerAdmin: (b) =>
@@ -192,7 +203,7 @@ async function main(): Promise<void> {
     reseller,
     productId: config.RESELLER_PRODUCT_ID,
     lowBalanceLinks: config.LOW_BALANCE_ORDERS,
-    sendNudges: () => sendPaymentNudges({ db, port, facts, logger, write: (order) => writeNudge(pool, order) }),
+    sendNudges: () => sendPaymentNudges({ db, port, facts, logger }),
     sendReminders: () => sendActivationReminders({ db, port, logger, delayMinutes: config.REMINDER_DELAY_MINUTES }),
   });
 

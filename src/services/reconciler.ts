@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNotNull, lt, or, sql } from 'drizzle-orm';
 import type { Flows } from '../bot/flows.js';
+import { readUsage } from '../agent/usage.js';
 import { naira } from '../bot/views.js';
 import type { Db } from '../db/client.js';
 import { events, orders } from '../db/schema.js';
@@ -134,7 +135,7 @@ export function createReconciler(deps: ReconcilerDeps) {
     if ((await getSetting<string>(db, 'last_daily_summary')) === today) return;
     await setSetting(db, 'last_daily_summary', today);
 
-    const s = await salesStats(db, t);
+    const [s, ai] = await Promise.all([salesStats(db, t), readUsage(db, t)]);
     let stock = 'reseller unreachable';
     try {
       const [balance, product] = await Promise.all([deps.reseller.getBalance(), deps.reseller.getProduct(deps.productId)]);
@@ -152,6 +153,7 @@ export function createReconciler(deps: ReconcilerDeps) {
         `reseller: ${stock}`,
         `total so far: ${s.total.orders} orders, ${s.total.links} links, ${naira(s.total.revenueNgn)}`,
         activationLine(s.activation),
+        `ai today: ${ai.calls} model calls (${ai.rateLimited} rate limited), ${ai.free} answered free, ${ai.fallbacks} scripted fallbacks`,
       ].join('\n'),
     });
   }

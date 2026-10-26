@@ -38,7 +38,8 @@ describe('scripted fallback understands what buyers want', () => {
     expect(price).toMatchObject({ kind: 'reply', text: expect.stringContaining('₦3,500 per link') });
     expect(turn('how much for 4')).toMatchObject({ kind: 'reply', text: expect.stringContaining('4 links come to ₦14,000') });
     expect(turn('wetin be the price', pcm)).toMatchObject({ text: expect.stringContaining('na ₦3,500 per link') });
-    expect(turn('is this legit?')).toMatchObject({ kind: 'reply', text: expect.stringMatching(/(isn't|not) affiliated with google or jio/) });
+    expect(turn('is this legit?')).toEqual({ kind: 'proof' });
+    expect(turn('i dont believe you')).toEqual({ kind: 'proof' });
     const who = turn('who made you');
     expect(who).toMatchObject({ kind: 'reply', text: expect.stringContaining('built by samkiel') });
     expect(who.kind === 'reply' && who.keyboard?.flat().map((b) => b.text)).toEqual(['portfolio', 'github', 'linkedin']);
@@ -89,7 +90,7 @@ describe('isPurchaseRequest', () => {
     for (const yes of ['i need 3 links, how much and can i pay now', 'buy one', 'i want 2 links', 'abeg i wan 2 links', 'send me a link']) {
       expect(isPurchaseRequest(yes)).toBe(true);
     }
-    for (const no of ['how much', 'i want to know the price', 'what do i get', 'who made you', 'i need help']) {
+    for (const no of ['how much', 'i want to know the price', 'what do i get', 'who made you', 'i need help', 'give me a free link']) {
       expect(isPurchaseRequest(no)).toBe(false);
     }
   });

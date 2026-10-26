@@ -40,8 +40,8 @@ describe('loadConfig', () => {
     expect(config.FEE_FLAT).toBe(0);
     expect(config.RESELLER_BASE_URL).toBe('https://api-geminipro.ignorelist.com/api/reseller/v1');
     expect(config.RESELLER_MOCK_URL).toBe('http://127.0.0.1:4010/api/reseller/v1');
-    expect(config.GROQ_MODEL).toBe('openai/gpt-oss-120b');
-    expect(config.GROQ_FALLBACK_MODELS).toEqual([]);
+    expect(config.GROQ_MODELS).toEqual(['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b']);
+    expect(config.LLM_CONCURRENCY).toBe(6);
     expect(config.SUPPORT_WHATSAPP_INTL).toBe('2348087357158');
     expect(localPhone(config.SUPPORT_WHATSAPP_INTL)).toBe('08087357158');
     expect(config.REMINDER_DELAY_MINUTES).toBe(180);
@@ -65,13 +65,13 @@ describe('loadConfig', () => {
     const config = loadConfig({
       ...validEnv,
       GROSS_UP: 'true',
-      GROQ_FALLBACK_MODELS: 'a, b ,,c',
+      GROQ_MODELS: 'a, b ,,c',
       SALES_CUTOFF: '2026-10-29T19:30:00+01:00',
     });
     expect(config.ADMIN_TELEGRAM_IDS).toEqual([111, 222]);
     expect(config.GROSS_UP).toBe(true);
     expect(config.RESELLER_MOCK).toBe(true);
-    expect(config.GROQ_FALLBACK_MODELS).toEqual(['a', 'b', 'c']);
+    expect(config.GROQ_MODELS).toEqual(['a', 'b', 'c']);
     expect(config.SALES_CUTOFF?.toISOString()).toBe('2026-10-29T18:30:00.000Z');
   });
 

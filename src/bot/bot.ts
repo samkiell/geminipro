@@ -1,24 +1,27 @@
 import { sql } from 'drizzle-orm';
 import { eq } from 'drizzle-orm';
 import type { Bot, Context } from 'grammy';
-import type { AgentReply } from '../agent/agent.js';
+import type { BrainResult } from '../agent/brain.js';
 import { detectLang, noteLanguage, type Lang } from '../agent/buyer.js';
-import { createPicker, isOwnerQuestion, isPurchaseRequest, quantityIn, scriptedTurn } from '../agent/fallback.js';
+import { createPicker } from '../agent/fallback.js';
+import { fastPath } from '../agent/fastpath.js';
 import { saveTurn } from '../agent/history.js';
-import type { ToolContext } from '../agent/tools.js';
 import type { HelpPage } from '../content/help.js';
 import type { Db } from '../db/client.js';
 import { users } from '../db/schema.js';
-import { OWNER_LINKS, ownerButtons } from '../knowledge/owner.js';
 import type { Notify } from '../services/notifier.js';
 import { findOwnOrder, UNPAID_OPEN } from '../services/orders.js';
+import { priceFor, type PricingConfig } from '../services/pricing.js';
+import type { Proof } from '../services/proof.js';
 import type { Logger } from '../util/logger.js';
 import type { Flows } from './flows.js';
+import { createResponder } from './respond.js';
 import type { Keyboard, TelegramPort } from './telegram.js';
-import { cb, STALE_BUTTON, type UiFacts } from './views.js';
+import { priceView, STALE_BUTTON, type UiFacts } from './views.js';
 
-// Buyer side of the bot: four commands (/start /buy /history /help), button taps, and free text
-// for the agent. Anything visual goes through flows; this file only routes.
+// Buyer side of the bot: four commands (/start /buy /history /help), button taps, and free text.
+// Free text costs at most one model call: the fast path and the cache answer common messages for
+// free, and the scripted fallback answers when no model is free. Visuals go through flows.
 
 export interface BotDeps {
   db: Db;
@@ -26,28 +29,23 @@ export interface BotDeps {
   port: TelegramPort;
   flows: Flows;
   facts: UiFacts;
-  agent: {
-    available: () => boolean;
-    reply: (input: { userText: string; ctx: ToolContext }) => Promise<AgentReply>;
-  };
+  pricing: PricingConfig;
+  /** One model decision per message (agent/brain.ts). */
+  brain: { decide: (telegramId: number, userText: string) => Promise<BrainResult & { cached?: boolean }> };
+  proof: Pick<Proof, 'send'>;
   saveLead: (telegramId: number, username: string | undefined, summary: string) => Promise<'saved' | 'limited'>;
+  /** Counts free answers and scripted fallbacks (agent/usage.ts). */
+  usage?: { free: () => void; fallback: (reason: string) => void };
   /** Per user. Default 20 messages per 10 minutes (docs/ARCHITECTURE.md 5.1). */
   rateLimit?: { max: number; windowMs: number };
   /** Admin commands, registered before the buyer ones (they never reach non admins). */
   registerAdmin?: (bot: Bot) => void;
-  /** Owner alerts; used here to report that the model is rate limited or down. */
+  /** Owner alerts (support requests). */
   notify?: Notify;
 }
 
 const MAX_USER_TEXT = 1_000;
 const HELP_PAGES = new Set<string>(['hub', 'how', 'get', 'activate', 'plan', 'policy', 'offer']);
-const MENU: Keyboard = [
-  [{ text: 'buy a link', data: cb.buy(1) }],
-  [
-    { text: 'my orders', data: cb.history(1) },
-    { text: 'help', data: cb.help('hub') },
-  ],
-];
 
 export function registerBot(bot: Bot, deps: BotDeps): void {
   const { db, port, flows, logger } = deps;
@@ -67,6 +65,17 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
     if (keyboard) ephemeral.set(telegramId, id);
     if (ephemeral.size > 10_000) ephemeral.clear();
   }
+
+  const responder = createResponder({
+    flows,
+    facts: deps.facts,
+    pricing: deps.pricing,
+    proof: deps.proof,
+    notify: deps.notify ?? (() => {}),
+    saveLead: deps.saveLead,
+    reply,
+    pick: pickFor,
+  });
 
   // Private chats only.
   bot.use(async (ctx, next) => {
@@ -198,6 +207,17 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
         await flows.answerActivation(telegramId, messageId, b, a === 'y' ? 'yes' : 'help', ctx.from.username);
         return;
       }
+      case 'pr': {
+        await port.answer(queryId);
+        const quantity = Math.min(Math.max(Number(a) || 1, 1), deps.facts.maxQtyPerOrder);
+        const view = priceView(quantity, priceFor(quantity, deps.pricing).totalNgn, deps.facts);
+        await reply(telegramId, view.text, view.keyboard);
+        return;
+      }
+      case 'pf':
+        await port.answer(queryId);
+        await deps.proof.send(telegramId);
+        return;
       case 'v': {
         // v:<itemId> asks to confirm, v:y:<itemId> closes the link, v:n:<itemId> backs out.
         const step = a === 'y' ? 'yes' : a === 'n' ? 'no' : 'ask';
@@ -223,48 +243,28 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
     await clearEphemeral(telegramId);
     await noteLanguage(db, telegramId, userText);
     const lang = detectLang(userText) ?? (await storedLang(db, telegramId));
-
-    const toolCtx: ToolContext = { telegramId, username, attachments: [] };
-    let answer: AgentReply | undefined;
-    if (deps.agent.available()) {
-      await ctx.replyWithChatAction('typing').catch(() => {});
-      try {
-        answer = await deps.agent.reply({ userText, ctx: toolCtx });
-      } catch (err) {
-        logger.error({ err, telegramId }, 'agent turn crashed; answering with a scripted reply');
-      }
-    }
+    const turn = { telegramId, username, userText, lang };
 
     let saved: string;
-    if (answer && !answer.failed) {
-      // A clear "i want to pay now" must end with the card, even if the model only quoted a price.
-      if (!toolCtx.cardShown && isPurchaseRequest(userText)) {
-        const outcome = await flows.startBuy(telegramId, quantityIn(userText) ?? 1);
-        if (outcome.ok) toolCtx.cardShown = outcome;
-      }
-      // Questions about the maker always get his links, even when the model answered from memory.
-      if (toolCtx.attachments.length === 0 && isOwnerQuestion(userText)) {
-        toolCtx.attachments.push(ownerButtons('identity').map((name) => ({ text: name, url: OWNER_LINKS[name] })));
-      }
-      const keyboard = toolCtx.attachments.length > 0 ? toolCtx.attachments : undefined;
-      // The model talked about a button that is not there: give them real ones.
-      const phantom = !keyboard && !toolCtx.cardShown && /\b(tap|button|pay now)\b/i.test(answer.text);
-      await reply(telegramId, answer.text, keyboard ?? (phantom ? MENU : undefined));
-      saved = answer.text;
+    const fast = fastPath(userText, lang, pickFor(telegramId));
+    if (fast) {
+      deps.usage?.free();
+      saved = await responder.act(turn, fast);
     } else {
-      if (answer?.failure !== 'empty') {
-        deps.notify?.({
-          level: 'warning',
-          title: 'groq unavailable, scripted replies in use',
-          body: `The agent could not answer (${answer?.failure ?? 'no model free'}). Buyers get scripted replies and can still buy. On the free tier this usually clears within a minute.`,
-          cooldownKey: 'groq',
-        });
+      // Typing first, so the buyer sees the bot at work while the model thinks.
+      await ctx.replyWithChatAction('typing').catch(() => {});
+      let result: BrainResult | undefined;
+      try {
+        result = await deps.brain.decide(telegramId, userText);
+      } catch (err) {
+        logger.error({ err, telegramId }, 'model turn crashed; answering with a scripted reply');
       }
-      if (toolCtx.cardShown) {
-        saved = "your order card is above. tap pay when you're ready.";
-        await reply(telegramId, saved);
+      if (result?.ok) {
+        if ('cached' in result && result.cached) deps.usage?.free();
+        saved = await responder.act(turn, result.decision);
       } else {
-        saved = await scripted(telegramId, username, userText, lang);
+        deps.usage?.fallback(result?.failure ?? 'crashed');
+        saved = await responder.scripted(turn);
       }
     }
 
@@ -279,41 +279,6 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
   bot.catch(({ error, ctx }) => {
     logger.error({ err: error, updateId: ctx.update.update_id }, 'bot handler failed');
   });
-
-  /** Rate limited, busy or down model: act on what they asked anyway. Returns what to remember. */
-  async function scripted(telegramId: number, username: string | undefined, userText: string, lang: Lang): Promise<string> {
-    const action = scriptedTurn(userText, { lang, facts: deps.facts, pick: pickFor(telegramId) });
-    switch (action.kind) {
-      case 'buy':
-        await flows.startBuy(telegramId, action.quantity);
-        return `[showed the order card for ${action.quantity}]`;
-      case 'history':
-        await flows.showHistory(telegramId, 1);
-        return '[showed their order history]';
-      case 'order':
-        if (!(await flows.showOrderByNo(telegramId, action.orderNo))) {
-          await reply(telegramId, `i couldn't find order ${action.orderNo} on your account. tap below to see your orders.`, [
-            [{ text: 'my orders', data: cb.history(1) }],
-          ]);
-        }
-        return `[showed order ${action.orderNo}]`;
-      case 'help':
-        await flows.showHelp(telegramId, action.page);
-        return `[showed help: ${action.page}]`;
-      case 'cancel': {
-        const text = (await flows.cancelPending(telegramId)) ? 'done, your unpaid order is cancelled.' : "you don't have an unpaid order.";
-        await reply(telegramId, text);
-        return text;
-      }
-      case 'lead':
-        await deps.saveLead(telegramId, username, userText);
-        await reply(telegramId, action.text, action.keyboard);
-        return action.text;
-      case 'reply':
-        await reply(telegramId, action.text, action.keyboard);
-        return action.text;
-    }
-  }
 }
 
 async function storedLang(db: Db, telegramId: number): Promise<Lang> {

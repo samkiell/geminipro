@@ -97,20 +97,51 @@ describe('ModelPool', () => {
     expect(pool.usable()).toEqual(['b']);
   });
 
-  it('turns are refused as busy beyond the in-flight limit', async () => {
-    let release!: () => void;
+  it('tries at most two models for one call', async () => {
+    const down = () => Object.assign(new Error('boom'), { status: 503 });
+    const { transport, calls } = script({ a: [down()], b: [down()], c: [{}] });
+    const pool = new ModelPool(transport, ['a', 'b', 'c'], { logger });
+    await expect(pool.complete({ messages: [] })).rejects.toMatchObject({ reason: 'failed' });
+    expect(calls).toEqual(['a', 'b']);
+  });
+
+  it('beyond the in-flight limit a call waits briefly in the queue, then is refused as busy', async () => {
+    const releases: (() => void)[] = [];
     const transport: LlmTransport = {
-      create: () =>
-        new Promise((resolve) => {
-          release = () => resolve({ completion: ok, headers: new Headers() });
-        }),
+      create: () => new Promise((resolve) => releases.push(() => resolve({ completion: ok, headers: new Headers() }))),
     };
-    const pool = new ModelPool(transport, ['a'], { logger, maxInFlight: 1 });
+    const pool = new ModelPool(transport, ['a'], { logger, maxInFlight: 1, maxQueue: 1, queueWaitMs: 50 });
     const first = pool.complete({ messages: [] });
+    const queued = pool.complete({ messages: [] });
+    // the queue is full: refused at once
     await expect(pool.complete({ messages: [] })).rejects.toMatchObject({ reason: 'busy' });
     expect(pool.available).toBe(false);
-    release();
+    releases.shift()?.();
     await first;
+    // the queued call got the slot as soon as it was free
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    releases.shift()?.();
+    expect((await queued).model).toBe('a');
     expect(pool.available).toBe(true);
+
+    // a call that waits longer than queueWaitMs gives up
+    const slow = pool.complete({ messages: [] });
+    await expect(pool.complete({ messages: [] })).rejects.toMatchObject({ reason: 'busy' });
+    releases.shift()?.();
+    await slow;
+  });
+
+  it('reports every call with its latency and tokens, never the content', async () => {
+    const records: unknown[] = [];
+    const withUsage = { ...ok, usage: { prompt_tokens: 700, completion_tokens: 50, total_tokens: 750 } } as unknown as ChatCompletion;
+    const transport: LlmTransport = { create: async () => ({ completion: withUsage, headers: new Headers() }) };
+    let now = 0;
+    const pool = new ModelPool(transport, ['a'], {
+      logger,
+      onCall: (c) => records.push(c),
+      now: () => (now += 400),
+    });
+    await pool.complete({ messages: [] });
+    expect(records).toEqual([{ model: 'a', ok: true, latencyMs: 400, promptTokens: 700, completionTokens: 50 }]);
   });
 });

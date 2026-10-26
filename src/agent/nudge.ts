@@ -4,10 +4,12 @@ import { payLabel, type UiFacts } from '../bot/views.js';
 import type { Db } from '../db/client.js';
 import { orders } from '../db/schema.js';
 import type { Logger } from '../util/logger.js';
+import { naira } from './prompt.js';
 import { saveTurn } from './history.js';
 
 // Abandoned payment nudge (docs/ARCHITECTURE.md 5.3): one short follow up about 10 minutes after a
 // payment link was issued and not paid, then never again for that order. Run by the reconciler.
+// A fixed template, not the model: the model's quota is kept for buyers' messages.
 
 export const NUDGE_AFTER_MINUTES = 10;
 
@@ -15,7 +17,8 @@ export interface NudgeDeps {
   db: Db;
   port: TelegramPort;
   facts: UiFacts;
-  write: (order: { quantity: number; totalNgn: number; minutesLeft: number }) => Promise<string>;
+  /** Default: nudgeTemplate. */
+  write?: (order: { quantity: number; totalNgn: number; minutesLeft: number }) => Promise<string>;
   logger: Logger;
 }
 
@@ -46,7 +49,8 @@ export async function sendPaymentNudges(deps: NudgeDeps): Promise<number> {
     if (!claimed?.checkoutUrl || !claimed.expiresAt) continue;
 
     const minutesLeft = Math.max(1, Math.floor((claimed.expiresAt.getTime() - Date.now()) / 60_000));
-    const text = await deps.write({ quantity: claimed.quantity, totalNgn: claimed.amountNgn, minutesLeft });
+    const details = { quantity: claimed.quantity, totalNgn: claimed.amountNgn, minutesLeft };
+    const text = deps.write ? await deps.write(details) : nudgeTemplate(details);
     try {
       // A plain link button: its job ends with the payment window, so nothing to retire later.
       await deps.port.send(claimed.telegramId, {
@@ -60,4 +64,9 @@ export async function sendPaymentNudges(deps: NudgeDeps): Promise<number> {
     }
   }
   return sent;
+}
+
+export function nudgeTemplate({ quantity, totalNgn, minutesLeft }: { quantity: number; totalNgn: number; minutesLeft: number }): string {
+  const what = quantity === 1 ? 'your gemini pro link' : `your ${quantity} gemini pro links`;
+  return `quick reminder, the payment for ${what} (${naira(totalNgn)}) is still open for about ${minutesLeft} minutes. tap pay below, or ask me anything.`;
 }

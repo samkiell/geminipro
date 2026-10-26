@@ -1,8 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buyerContext, detectLang, noteLanguage } from '../src/agent/buyer.js';
-import { nudgeTemplate } from '../src/agent/agent.js';
-import { sendPaymentNudges } from '../src/agent/nudge.js';
+import { nudgeTemplate, sendPaymentNudges } from '../src/agent/nudge.js';
 import { leads, orders, users } from '../src/db/schema.js';
 import { OWNER, OWNER_BLURB, OWNER_LINKS, ownerButtons } from '../src/knowledge/owner.js';
 import { latestLeads, MAX_LEADS_PER_DAY, saveLead } from '../src/services/leads.js';

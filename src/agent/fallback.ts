@@ -15,6 +15,8 @@ export type ScriptedAction =
   | { kind: 'order'; orderNo: string }
   | { kind: 'help'; page: HelpPage | 'hub' }
   | { kind: 'cancel' }
+  /** The proof album. */
+  | { kind: 'proof' }
   /** Saves the message as a lead for samkiel, then replies. */
   | { kind: 'lead'; text: string; keyboard: Keyboard }
   | { kind: 'reply'; text: string; keyboard?: Keyboard };
@@ -44,13 +46,19 @@ export function quantityIn(text: string): number | undefined {
   return undefined;
 }
 
-const MENU: Keyboard = [
-  [{ text: 'buy a link', data: cb.buy(1) }],
-  [
-    { text: 'my orders', data: cb.history(1) },
-    { text: 'help', data: cb.help('hub') },
-  ],
-];
+/** The buttons every scripted reply falls back to (Prompt C section 5). */
+export function fallbackButtons(facts: UiFacts): Keyboard {
+  return [
+    [
+      { text: 'buy a link', data: cb.buy(1) },
+      { text: 'price', data: cb.price(1) },
+    ],
+    [
+      { text: 'see proof', data: cb.proof },
+      { text: 'support', url: supportUrl(facts.supportIntl) },
+    ],
+  ];
+}
 
 const random = (options: readonly string[]) => options[Math.floor(Math.random() * options.length)] ?? options[0] ?? '';
 
@@ -61,6 +69,8 @@ const random = (options: readonly string[]) => options[Math.floor(Math.random() 
  */
 export function isPurchaseRequest(text: string): boolean {
   const t = text.toLowerCase();
+  // "give me a free link" is not an order.
+  if (/\bfree\b/.test(t)) return false;
   return (
     /\b(buy|pay now|can i pay|purchase|i('ll| will) take|send me|give me)\b/.test(t) ||
     /\b(want|need|wan)\b.*\b(\d{1,2}|one|two|three|four|five|a|an)\s+(links?|gemini|codes?)\b/.test(t)
@@ -80,6 +90,7 @@ export function scriptedTurn(userText: string, c: ScriptedContext): ScriptedActi
   const pcm = c.lang === 'pcm';
   const price = naira(c.facts.unitPriceNgn);
   const support = { text: 'whatsapp support', url: supportUrl(c.facts.supportIntl) };
+  const MENU = fallbackButtons(c.facts);
 
   const orderNo = /\bgp-?\s?(\d{3,7})\b/.exec(t);
   if (orderNo) return { kind: 'order', orderNo: `GP-${orderNo[1]}` };
@@ -116,15 +127,9 @@ export function scriptedTurn(userText: string, c: ScriptedContext): ScriptedActi
     return { kind: 'history' };
   }
 
-  if (/\b(legit|scam|fake|trust|safe|genuine|original|sure say)\b|\breal\b|where (do|does|did) (the|these|your) links? come from|where (you|una) (dey )?get/.test(t)) {
-    return {
-      kind: 'reply',
-      text: pick([
-        "yes, it's real. samkiel buys google's 18 month ai pro offer links from jio in bulk and resells them here. the shop isn't affiliated with google or jio. you pay on the secure bachs page and the link comes straight to this chat.",
-        "fair question. the links are google's 18 month ai pro offer from jio, bought in bulk and resold by samkiel. not affiliated with google or jio, and support is on whatsapp if anything goes wrong.",
-      ]),
-      keyboard: [[{ text: 'how it works', data: cb.help('how') }, support]],
-    };
+  // Doubt gets the real screenshots, with the fixed honest text (src/content/replies.ts).
+  if (/\b(legit|scam|fake|trust|safe|genuine|original|sure say|proof|believe)\b|\breal\b|where (do|does|did) (the|these|your) links? come from|where (you|una) (dey )?get/.test(t)) {
+    return { kind: 'proof' };
   }
 
   if (/\b(activate|activation|redeem|how (do|to|can) i use|how e dey work|how to use)\b/.test(t)) return { kind: 'help', page: 'activate' };
@@ -136,7 +141,7 @@ export function scriptedTurn(userText: string, c: ScriptedContext): ScriptedActi
   }
 
   const quantity = quantityIn(t);
-  const wantsToBuy = /\b(buy|want|need|purchase|pay|send me|give me|i wan|collect|interested|order (one|two|\d))\b|\babeg\b/.test(t);
+  const wantsToBuy = /\b(buy|want|need|purchase|pay|send me|give me|i wan|collect|interested|order (one|two|\d)|can i (get|have)|i'?d like|let me get)\b|\babeg\b/.test(t);
   if (wantsToBuy) return { kind: 'buy', quantity: quantity ?? 1 };
 
   if (/(how much|price|cost|amount|naira|₦|hw much|wetin be (the )?price|how far (the )?price)/.test(t)) {

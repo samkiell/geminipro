@@ -4,9 +4,9 @@ import type { Logger } from '../util/logger.js';
 
 // Groq's free tier allows about 8000 tokens a minute and 1000 requests a day per model. Under load
 // the bot must not wait on a model that is out of budget: this pool learns each model's limits
-// from the response headers, rests a model after a 429 until its reset time, and throws
-// LlmUnavailable at once (no network call) when nothing is usable, so the caller can answer
-// with a scripted reply straight away.
+// from the response headers, rests a model after a 429 until its reset time, tries at most two
+// models per call, and throws LlmUnavailable at once (no network call) when nothing is usable, so
+// the caller can answer with a scripted reply straight away.
 
 export type CompletionParams = ChatCompletionCreateParamsNonStreaming;
 
@@ -39,14 +39,31 @@ interface ModelState {
   requestsResetAt?: number;
 }
 
+/** One model call, for logs and counters. Never the prompt or the reply. */
+export interface CallRecord {
+  model: string;
+  ok: boolean;
+  latencyMs: number;
+  status?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+}
+
 export interface ModelPoolOptions {
   logger: Logger;
-  /** Calls allowed at once across all users. Extra turns get the scripted reply. Default 4. */
+  /** Calls allowed at once across all users. Default 6. */
   maxInFlight?: number;
-  /** A model with fewer tokens left in its minute is skipped until its reset. Default 2500. */
+  /** Calls that may wait for a free slot; beyond that, or after queueWaitMs, the scripted reply. Default 12. */
+  maxQueue?: number;
+  /** Default 2.5s. */
+  queueWaitMs?: number;
+  /** Models tried for one call before giving up. Default 2. */
+  maxAttempts?: number;
+  /** A model with fewer tokens left in its minute is skipped until its reset. Default 1200. */
   minTokens?: number;
-  /** Per call. Default 8s: a slow model loses to the scripted reply. */
+  /** Per model attempt. Default 6s: a slow model loses to the scripted reply. */
   timeoutMs?: number;
+  onCall?: (call: CallRecord) => void;
   now?: () => number;
 }
 
@@ -74,7 +91,11 @@ function headerOf(headers: unknown, name: string): string | undefined {
 export class ModelPool {
   private readonly state = new Map<string, ModelState>();
   private inFlight = 0;
+  private readonly waiting: { start: () => void }[] = [];
   private readonly maxInFlight: number;
+  private readonly maxQueue: number;
+  private readonly queueWaitMs: number;
+  private readonly maxAttempts: number;
   private readonly minTokens: number;
   private readonly timeoutMs: number;
   private readonly now: () => number;
@@ -84,10 +105,41 @@ export class ModelPool {
     readonly models: string[],
     private readonly opts: ModelPoolOptions,
   ) {
-    this.maxInFlight = opts.maxInFlight ?? 4;
-    this.minTokens = opts.minTokens ?? 2_500;
-    this.timeoutMs = opts.timeoutMs ?? 8_000;
+    this.maxInFlight = opts.maxInFlight ?? 6;
+    this.maxQueue = opts.maxQueue ?? 12;
+    this.queueWaitMs = opts.queueWaitMs ?? 2_500;
+    this.maxAttempts = opts.maxAttempts ?? 2;
+    this.minTokens = opts.minTokens ?? 1_200;
+    this.timeoutMs = opts.timeoutMs ?? 6_000;
     this.now = opts.now ?? Date.now;
+  }
+
+  /** A slot to call in: now, after a short wait in the queue, or LlmUnavailable('busy'). */
+  private acquire(): Promise<void> {
+    if (this.inFlight < this.maxInFlight) {
+      this.inFlight++;
+      return Promise.resolve();
+    }
+    if (this.waiting.length >= this.maxQueue) return Promise.reject(new LlmUnavailable('busy'));
+    return new Promise((resolve, reject) => {
+      const entry = {
+        start: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+      };
+      const timer = setTimeout(() => {
+        this.waiting.splice(this.waiting.indexOf(entry), 1);
+        reject(new LlmUnavailable('busy'));
+      }, this.queueWaitMs);
+      this.waiting.push(entry);
+    });
+  }
+
+  private release(): void {
+    const next = this.waiting.shift();
+    if (next) next.start(); // the slot passes straight to the next call
+    else this.inFlight--;
   }
 
   /** Models that can take a call right now, in preference order. */
@@ -103,30 +155,38 @@ export class ModelPool {
     });
   }
 
-  /** True when a turn would get a model; lets callers skip straight to the scripted reply. */
+  /** True when a call could get a model (now or after a short wait); else go straight to the scripted reply. */
   get available(): boolean {
-    return this.inFlight < this.maxInFlight && this.usable().length > 0;
+    return (this.inFlight < this.maxInFlight || this.waiting.length < this.maxQueue) && this.usable().length > 0;
   }
 
   async complete(
     params: Omit<CompletionParams, 'model'>,
     paramsFor: (model: string) => Partial<CompletionParams> = () => ({}),
-  ): Promise<{ completion: ChatCompletion; model: string }> {
-    if (this.inFlight >= this.maxInFlight) throw new LlmUnavailable('busy');
-    const candidates = this.usable();
-    if (candidates.length === 0) throw new LlmUnavailable('rate_limited');
-
-    this.inFlight++;
+  ): Promise<{ completion: ChatCompletion; model: string; latencyMs: number }> {
+    if (this.usable().length === 0) throw new LlmUnavailable('rate_limited');
+    await this.acquire();
     try {
+      // Re-read after any wait: a model may have been rate limited meanwhile.
+      const candidates = this.usable().slice(0, this.maxAttempts);
+      if (candidates.length === 0) throw new LlmUnavailable('rate_limited');
       let rateLimited = 0;
       for (const model of candidates) {
+        const started = this.now();
         try {
           const { completion, headers } = await this.transport.create(
             { ...params, model, ...paramsFor(model) } as CompletionParams,
             { timeout: this.timeoutMs },
           );
+          const latencyMs = this.now() - started;
           this.learn(model, headers);
-          return { completion, model };
+          this.record({
+            model,
+            ok: true,
+            latencyMs,
+            ...(completion.usage && { promptTokens: completion.usage.prompt_tokens, completionTokens: completion.usage.completion_tokens }),
+          });
+          return { completion, model, latencyMs };
         } catch (err) {
           const status = (err as { status?: number }).status;
           const headers = (err as { headers?: unknown }).headers;
@@ -135,6 +195,7 @@ export class ModelPool {
             const wait =
               parseDuration(headerOf(headers, 'retry-after')) ??
               parseDuration(headerOf(headers, 'x-ratelimit-reset-tokens')) ??
+              parseDuration(headerOf(headers, 'x-ratelimit-reset-requests')) ??
               20_000;
             this.rest(model, Math.min(Math.max(wait, 1_000), 10 * 60_000));
           } else if (status === 401 || status === 403) {
@@ -143,13 +204,19 @@ export class ModelPool {
             this.rest(model, 5_000); // timeout, network or server trouble
           }
           // Other 4xx are about this request, not the model: no rest, just try the next one.
-          this.opts.logger.warn({ model, status, err: (err as Error).message?.slice(0, 200) }, 'groq call failed');
+          this.record({ model, ok: false, latencyMs: this.now() - started, ...(status !== undefined && { status }) }, err);
         }
       }
       throw new LlmUnavailable(rateLimited === candidates.length ? 'rate_limited' : 'failed');
     } finally {
-      this.inFlight--;
+      this.release();
     }
+  }
+
+  private record(call: CallRecord, err?: unknown): void {
+    if (call.ok) this.opts.logger.info(call, 'groq call');
+    else this.opts.logger.warn({ ...call, err: (err as Error)?.message?.slice(0, 200) }, 'groq call failed');
+    this.opts.onCall?.(call);
   }
 
   private rest(model: string, ms: number): void {
