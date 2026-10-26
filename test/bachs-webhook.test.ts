@@ -194,6 +194,12 @@ describe('POST /bachs/webhook', () => {
     expect((await orderRow(order.id))?.status).toBe('paid');
   });
 
+  it('honours a payment that lands after the buyer cancelled', async () => {
+    const order = await createOrder('cancelled');
+    expect((await deliver(eventBody(order))).json()).toEqual({ ok: true, result: 'paid' });
+    expect((await orderRow(order.id))?.status).toBe('paid');
+  });
+
   it('asks Bachs to retry while the checkout is not completed, then pays on the retry', async () => {
     const order = await createOrder();
     checkout = { ...(checkout as CheckoutSession), status: 'open' };
