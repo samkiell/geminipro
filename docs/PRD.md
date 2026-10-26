@@ -114,7 +114,9 @@ The delivery message is a fixed short template in code (so the facts are always 
 > open the browser where you're already signed in to the google account you want it on, paste the link and activate it.
 > ⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.
 
-Buttons: [need help on whatsapp] [my orders]. For bulk orders each link is numbered ("link 1 of 3"), and long orders are split across messages under Telegram's limit. Activation links are never written to logs.
+Buttons: [✅ i've activated it] [need help on whatsapp] [my orders]. For bulk orders each link is numbered ("link 1 of 3") with its own [✅ link 1 activated] button, and long orders are split across messages under Telegram's limit. Activation links are never written to logs.
+
+The last step of the buy flow: once the buyer activates a link they tap its ✅ and confirm ("yes, it is activated. close it" or "not yet"). The link is then closed: every message that showed it is edited to "activated ✅, closed", and it is never shown again (not in history, not by /resend). The bot cannot cancel the link at Google; closing it only means the shop stops showing it. Activations are counted in /stats and the daily summary.
 
 ### 8.5A Buyer experience
 
@@ -124,7 +126,7 @@ Buttons: [need help on whatsapp] [my orders]. For bulk orders each link is numbe
 - `/history`: orders as buttons, 5 per page; an order card with its timeline and [show my links].
 - `/help` hub: how it works, what you get, how to activate, existing plan, refunds and expiry, offer status, my orders, support.
 - Human readable order numbers (GP-1001 onward). The offer line is a setting (default "offer ending very soon", changed with `/offertext`); buyer facing text never states an end date.
-- One activation reminder per order about 3 hours after delivery ("did you activate your link?" with [yes, activated ✅] [i need help]), never between 23:00 and 07:00 WAT.
+- One activation reminder per order about 3 hours after delivery, unless every link is already marked activated ("did you activate your link?" with [yes, activated ✅] [i need help]; yes closes all its links), never between 23:00 and 07:00 WAT.
 
 ### 8.6 Support
 
@@ -175,7 +177,7 @@ State changes are persisted before external calls. A reconciliation job runs on 
 
 - **users:** telegram_user_id, username, first seen.
 - **orders:** id, telegram_user_id, quantity, status, amount_ngn, payment_reference (unique), checkout_id, timestamps, error info.
-- **order_items:** order_id, index, reseller_order_code, activation_link, status.
+- **order_items:** order_id, index, reseller_order_code, activation_link, status, delivered_at, activated_at, and the buyer messages that show it.
 - **events:** webhook payloads and reseller responses with secrets redacted.
 - **messages:** short chat history per user (last 10 turns used for the LLM).
 

@@ -69,7 +69,6 @@ export const OWNER_LINKS = {
   portfolio: 'https://samkiel.dev',
   blog: 'https://blog.samkiel.dev',
   github: 'https://github.com/samkiell',
-  // samkiel: confirm the exact LinkedIn URL before launch.
   linkedin: 'https://linkedin.com/in/samkiell',
 } as const;
 

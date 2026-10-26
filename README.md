@@ -79,11 +79,12 @@ The mock reseller keeps everything in memory. While it runs, `POST http://127.0.
 - **Commands**: `/start`, `/buy`, `/history`, `/help`. Everything else is chat ("i need 3", "where is my link", "who made you").
 - **Buying**: an order summary card with − and + for quantity, the fee line, the offer line, [pay] and [cancel], plus a live status message that turns into the receipt.
 - **Delivery**: links in tap-to-copy code blocks, numbered for bulk orders, with [need help on whatsapp] [my orders].
+- **Activation, the last step**: each link has a ✅ button. After activating, the buyer taps it and confirms; the link is closed in every message that showed it and never shown again. /stats counts activations.
 - **History**: orders as buttons (GP-1042 · 2 links · 26 oct · delivered ✅), each with its card and [show my links].
 - **Buttons disappear** once their job is done; stale taps say "this button has expired".
 - **When Groq is rate limited** (free tier), the bot answers instantly with scripted replies that still open the card, history and help pages, in english or pidgin.
 
-Admins (ids in `ADMIN_TELEGRAM_IDS`) also get `/admin`, `/balance`, `/stats`, `/allorders`, `/order`, `/resend`, `/replace`, `/pause`, `/resume`, `/offertext`, `/leads`. Nobody else sees or can run them. Run `pnpm webhook:set` to register both menus.
+Admins (ids in `ADMIN_TELEGRAM_IDS`) also get `/admin`, `/balance`, `/stats`, `/allorders`, `/order`, `/resend`, `/replace`, `/pause`, `/resume`, `/offertext`, `/leads`. Nobody else sees or can run them. `/admin` opens a panel with a button for every one of them: orders open with a tap, "find an order" and "change offer text" ask for a reply, and replace asks to confirm because it costs money. Run `pnpm webhook:set` to register both menus.
 
 The offer line ("offer ending very soon") is a setting, not code: change it with `/offertext last 50 links left`. Buyer facing text never states an end date.
 
@@ -101,7 +102,7 @@ The reconciler runs at boot and then every 30 seconds (balance every 5 minutes).
 
 samkiel must read these two files line by line; the bot says what they say.
 
-- [ ] `src/knowledge/owner.ts`: every fact about samkiel is true and public, nothing private (no matric number, birth date, family, church, finances, supplier, costs, margins, balance). Confirm the LinkedIn URL.
+- [ ] `src/knowledge/owner.ts`: every fact about samkiel is true and public, nothing private (no matric number, birth date, family, church, finances, supplier, costs, margins, balance).
 - [ ] `src/content/help.ts`: how it works, what you get, activation steps, existing plan answer, and the refund and replacement policy are exactly what you will honour.
 - [ ] `src/agent/prompt.ts` and `src/bot/views.ts`: the price, fee wording and support number read right.
 - [ ] `/offertext` set to what you want buyers to see.

@@ -1,6 +1,6 @@
 # Runbook
 
-Short answers for running the shop. Admin commands work only in an admin's own chat with the bot. `/admin` opens a panel with buttons for the common ones.
+Short answers for running the shop. Admin commands work only in an admin's own chat with the bot. `/admin` opens a panel with a button for every admin command.
 
 ## Alerts
 
@@ -8,7 +8,7 @@ Alerts arrive by email, in your Telegram chat with the bot, and on ntfy, all at 
 
 ## How sales are going
 
-`/stats` shows today and all time (orders, links, revenue), plus failures, orders in progress and orders waiting for payment. `/leads` lists the latest people who asked samkiel to build something.
+`/stats` shows today and all time (orders, links, revenue), plus failures, orders in progress, orders waiting for payment, and how many delivered links buyers have marked activated. `/leads` lists the latest people who asked samkiel to build something.
 
 ## Change the offer line
 
@@ -29,6 +29,10 @@ Alerts arrive by email, in your Telegram chat with the bot, and on ntfy, all at 
 - **Paid, nothing bought** (balance, stock or supplier trouble): top up or wait for stock; it is retried automatically every 10 minutes.
 - **Buyer blocked the bot**: the links are saved. Ask them to unblock, then `/resend GP-1042`, or send the links by WhatsApp.
 - **Payment held** (amount or currency did not match): check the payment in the Bachs dashboard before doing anything. Do not fulfil until it is clear.
+
+## A buyer marked a link activated by mistake
+
+Closed links are never shown again, by the bot or by `/resend` (the buyer had to confirm). If the link really was not used, `/replace GP-1042` sends a new one; check the `/order` view first, it shows when each link was activated.
 
 ## A buyer says a link does not work
 

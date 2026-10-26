@@ -142,7 +142,8 @@ Rules enforced in code, regardless of what the model says:
 - Leads: "can you build me a website" saves a lead and alerts the owner.
 - Light memory: first name, new or returning, past orders, language. Pidgin in, light pidgin out.
 - Abandoned payment nudge: one follow up about 10 minutes after an unpaid payment link (model written, template fallback).
-- Activation reminder: one "did you activate your link?" after delivery (`REMINDER_DELAY_MINUTES`, default 180), never between 23:00 and 07:00 WAT.
+- Activation, the last step: every open link in a links message has a ✅ button (`v:<itemId>`). A tap swaps it for a confirmation (`v:y:` closes, `v:n:` backs out). Closing sets `order_items.activated_at` with a conditional UPDATE and edits every message in `message_ids` so the link turns into "activated ✅, closed". Closed links are never sent again (show my links, /resend, admin copies). When as many links are activated as were ordered, `orders.activated_confirmed_at` is set and history shows "activated ✅".
+- Activation reminder: one "did you activate your link?" after delivery (`REMINDER_DELAY_MINUTES`, default 180) unless the order is already activated, never between 23:00 and 07:00 WAT. Its yes closes every link of the order.
 - Smart escalation to WhatsApp support; never promises refunds or outcomes beyond the knowledge base.
 
 ### 5.4 Owner agent (stretch goal)
@@ -226,6 +227,8 @@ create table order_items (
   attempts int default 0,
   error text,
   delivered_at timestamptz,                -- set once Telegram accepted the message with it
+  activated_at timestamptz,                -- buyer tapped ✅ and confirmed: closed, never shown again
+  message_ids integer[] not null default '{}', -- buyer messages showing it, edited when it closes
   unique (order_id, idx)
 );
 
