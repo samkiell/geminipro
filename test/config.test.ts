@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { botLink, ConfigError, loadConfig } from '../src/config.js';
+import { botLink, ConfigError, loadConfig, localPhone } from '../src/config.js';
 
 const requiredEnv = {
   PUBLIC_URL: 'https://geminipro.onrender.com',
@@ -42,7 +42,9 @@ describe('loadConfig', () => {
     expect(config.RESELLER_MOCK_URL).toBe('http://127.0.0.1:4010/api/reseller/v1');
     expect(config.GROQ_MODEL).toBe('openai/gpt-oss-120b');
     expect(config.GROQ_FALLBACK_MODELS).toEqual([]);
-    expect(config.SUPPORT_WHATSAPP).toBe('08087357158');
+    expect(config.SUPPORT_WHATSAPP_INTL).toBe('2348087357158');
+    expect(localPhone(config.SUPPORT_WHATSAPP_INTL)).toBe('08087357158');
+    expect(config.REMINDER_DELAY_MINUTES).toBe(180);
     expect(config.SALES_CUTOFF).toBeUndefined();
     expect(config.RESEND_API_KEY).toBeUndefined();
     expect(config.BACHS_WEBHOOK_SECRET).toBeUndefined();

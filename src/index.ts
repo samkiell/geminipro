@@ -1,16 +1,23 @@
+import { autoRetry } from '@grammyjs/auto-retry';
+import { Bot } from 'grammy';
 import Groq from 'groq-sdk';
-import { groqClient, runAgent } from './agent/agent.js';
-import { promptFacts, systemPrompt } from './agent/prompt.js';
-import { createBuyerServices } from './agent/services.js';
+import { createAgentActions } from './agent/actions.js';
+import { groqTransport, ModelPool } from './agent/llm.js';
+import { promptFacts } from './agent/prompt.js';
 import { createTools } from './agent/tools.js';
-import { createBot } from './bot/bot.js';
-import { botLink, ConfigError, loadConfig, loadDotEnv, type Config } from './config.js';
+import { createAgentTurn } from './agent/turn.js';
+import { registerBot } from './bot/bot.js';
+import { createFlows } from './bot/flows.js';
+import { grammyPort } from './bot/telegram.js';
+import type { UiFacts } from './bot/views.js';
+import { botLink, ConfigError, loadConfig, loadDotEnv, localPhone, type Config } from './config.js';
 import { createDb } from './db/client.js';
 import { buildServer } from './server.js';
-import { BachsClient } from './services/bachs.js';
-import { telegramSender } from './services/delivery.js';
+import { BachsClient, BachsProvider } from './services/bachs.js';
 import { createFulfilment } from './services/fulfilment.js';
+import { saveLead } from './services/leads.js';
 import { logNotifier, type Notify } from './services/notifier.js';
+import { PAYMENT_WINDOW_MINUTES } from './services/orders.js';
 import { pricingFromConfig } from './services/pricing.js';
 import { createResellerClient } from './services/reseller.js';
 import { createLogger, type Logger } from './util/logger.js';
@@ -37,6 +44,7 @@ async function main(): Promise<void> {
   });
 
   const database = createDb(config.DATABASE_URL);
+  const db = database.db;
   try {
     await withTimeout(database.ping(), 10_000, 'database ping');
     logger.info('database reachable');
@@ -48,46 +56,76 @@ async function main(): Promise<void> {
   if (config.RESELLER_MOCK && config.NODE_ENV === 'development') await startDevMockReseller(config, logger);
 
   const notify = logNotifier(logger);
-  const bachs = new BachsClient({ secretKey: config.BACHS_SECRET_KEY, logger });
-  const reseller = createResellerClient(config, logger);
-  const send = telegramSender(config.TELEGRAM_BOT_TOKEN);
-  const fulfilment = createFulfilment({
-    db: database.db,
-    reseller,
-    productId: config.RESELLER_PRODUCT_ID,
-    send,
-    notify,
-    logger,
-    supportWhatsapp: config.SUPPORT_WHATSAPP,
-  });
 
-  const services = createBuyerServices({
-    db: database.db,
-    reseller,
-    bachs,
-    pricing: pricingFromConfig(config),
+  // One Bot API client for everything we send: timeouts, and Telegram's own 429s retried.
+  const bot = new Bot(config.TELEGRAM_BOT_TOKEN, { client: { timeoutSeconds: 15 } });
+  bot.api.config.use(autoRetry({ maxRetryAttempts: 2, maxDelaySeconds: 10 }));
+  const port = grammyPort(bot.api);
+
+  const facts: UiFacts = {
+    unitPriceNgn: config.UNIT_PRICE_NGN,
+    grossUp: config.GROSS_UP,
+    supportIntl: config.SUPPORT_WHATSAPP_INTL,
+    supportLocal: localPhone(config.SUPPORT_WHATSAPP_INTL),
     maxQtyPerOrder: config.MAX_QTY_PER_ORDER,
+    paymentWindowMinutes: PAYMENT_WINDOW_MINUTES,
+  };
+  const payments = new BachsProvider(
+    new BachsClient({ secretKey: config.BACHS_SECRET_KEY, ...(config.BACHS_BASE_URL && { baseUrl: config.BACHS_BASE_URL }), logger }),
+    config.BACHS_WEBHOOK_SECRET,
+  );
+  const reseller = createResellerClient(config, logger);
+  const pricing = pricingFromConfig(config);
+
+  const flows = createFlows({
+    db,
+    port,
+    logger,
+    reseller,
+    payments,
+    pricing,
+    facts,
     salesCutoff: config.SALES_CUTOFF,
     returnUrl: botLink(config),
-    supportWhatsapp: config.SUPPORT_WHATSAPP,
-    send,
+    notify,
+  });
+  const fulfilment = createFulfilment({
+    db,
+    reseller,
+    productId: config.RESELLER_PRODUCT_ID,
+    port,
+    facts,
     notify,
     logger,
+    onChange: flows.orderChanged,
   });
-  const agentOptions = {
-    client: groqClient(new Groq({ apiKey: config.GROQ_API_KEY })),
-    models: [...new Set([config.GROQ_MODEL, ...config.GROQ_FALLBACK_MODELS])],
-    tools: createTools(services, { maxQtyPerOrder: config.MAX_QTY_PER_ORDER }),
-    systemPrompt: systemPrompt(promptFacts(config)),
+
+  const pool = new ModelPool(
+    groqTransport(new Groq({ apiKey: config.GROQ_API_KEY })),
+    [...new Set([config.GROQ_MODEL, ...config.GROQ_FALLBACK_MODELS])],
+    { logger },
+  );
+  const tools = createTools(
+    createAgentActions({
+      db,
+      flows,
+      reseller,
+      pricing,
+      salesCutoff: config.SALES_CUTOFF,
+      supportIntl: facts.supportIntl,
+      supportLocal: facts.supportLocal,
+      notify,
+    }),
+    { maxQtyPerOrder: config.MAX_QTY_PER_ORDER },
+  );
+  registerBot(bot, {
+    db,
     logger,
-  };
-  const bot = createBot({
-    token: config.TELEGRAM_BOT_TOKEN,
-    db: database.db,
-    logger,
-    services,
-    agent: (input) => runAgent(agentOptions, input),
-    facts: { ...promptFacts(config), offerDeadline: config.OFFER_DEADLINE },
+    port,
+    flows,
+    facts,
+    agent: createAgentTurn({ db, pool, tools, facts: promptFacts(config), logger }),
+    saveLead: (telegramId, username, summary) => saveLead(db, notify, { telegramId, username, summary }),
   });
   try {
     await withTimeout(bot.init(), 15_000, 'telegram getMe');
@@ -104,13 +142,13 @@ async function main(): Promise<void> {
     logger,
     pingDb: database.ping,
     bachsWebhook: {
-      db: database.db,
-      bachs,
-      webhookSecret: config.BACHS_WEBHOOK_SECRET,
+      db,
+      payments,
       notify,
       onPaid: async (orderId) => {
         await fulfilment.fulfil(orderId);
       },
+      onChange: flows.orderChanged,
     },
     ...(!polling && { telegram: { bot, secretToken: config.TELEGRAM_WEBHOOK_SECRET } }),
   });
@@ -120,6 +158,7 @@ async function main(): Promise<void> {
     try {
       if (polling) await bot.stop();
       await app.close();
+      await flows.whenIdle();
       await database.close();
     } finally {
       process.exit(0);
@@ -134,20 +173,20 @@ async function main(): Promise<void> {
       .start({ onStart: () => logger.info('telegram long polling started (development)') })
       .catch((err: unknown) => logger.error({ err: (err as Error).message }, 'telegram polling stopped'));
   }
-  if (!config.BACHS_WEBHOOK_SECRET) {
+  if (!payments.webhookConfigured) {
     notify({
       level: 'warning',
       title: 'payment webhooks are off',
       body: 'BACHS_WEBHOOK_SECRET is not set, so Bachs webhooks get 503 and no order can be marked paid.',
     });
   }
-  void checkFeeSetup(bachs, config, notify, logger);
+  void checkFeeSetup(payments, config, notify, logger);
 }
 
 /** GROSS_UP must agree with the Bachs account's fee_preference, or fees are lost or charged twice. */
-async function checkFeeSetup(bachs: BachsClient, config: Config, notify: Notify, logger: Logger): Promise<void> {
+async function checkFeeSetup(payments: BachsProvider, config: Config, notify: Notify, logger: Logger): Promise<void> {
   try {
-    const preference = await bachs.getFeePreference();
+    const preference = await payments.getFeePreference();
     logger.info({ feePreference: preference, grossUp: config.GROSS_UP }, 'bachs fee setup');
     if (!config.GROSS_UP && preference === 'org_pays') {
       notify({

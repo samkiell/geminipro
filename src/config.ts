@@ -47,6 +47,8 @@ const envSchema = z.object({
   // Signing secret of the webhook endpoint (developer portal, or printed by `bachs listen`).
   // Unset: the app still runs, but answers webhooks with 503 so Bachs retries them later.
   BACHS_WEBHOOK_SECRET: z.string().optional(),
+  // Unset: picked from the key (sk_sandbox_ -> sandbox-api.bachs.io, sk_live_ -> api.bachs.io).
+  BACHS_BASE_URL: z.url().optional(),
   // false: the Bachs account's fee_preference is customer_pays, so Bachs adds the fee at checkout.
   // true: the account absorbs fees (org_pays) and the bot adds FEE_PCT/FEE_FLAT to the total itself.
   GROSS_UP: bool(false),
@@ -69,9 +71,13 @@ const envSchema = z.object({
   UNIT_PRICE_NGN: int().positive().default(3500),
   MAX_QTY_PER_ORDER: int().positive().default(10),
   LOW_BALANCE_ORDERS: int().min(0).default(5),
-  SUPPORT_WHATSAPP: z.string().default('08087357158'),
-  // Last day buyers can claim the offer (Jio's terms). The bot tells buyers to activate before it.
-  OFFER_DEADLINE: z.iso.date({ error: 'expected a date like 2026-10-29' }).default('2026-10-29'),
+  // International format without +, for wa.me links. Buyers see the local form (08087357158).
+  SUPPORT_WHATSAPP_INTL: z
+    .string()
+    .regex(/^[1-9]\d{9,14}$/, 'expected digits in international format, like 2348087357158')
+    .default('2348087357158'),
+  // Minutes after delivery before the one "did you activate your link?" reminder.
+  REMINDER_DELAY_MINUTES: int().min(1).default(180),
 
   ALERT_EMAIL: z.email().default('hello@samkiel.dev'),
   RESEND_API_KEY: z.string().optional(),
@@ -129,6 +135,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
 export function botLink(config: Pick<Config, 'TELEGRAM_BOT_USERNAME'>): string {
   return `https://t.me/${config.TELEGRAM_BOT_USERNAME}`;
+}
+
+/** 2348087357158 -> 08087357158, the form Nigerian buyers recognise. */
+export function localPhone(intl: string): string {
+  return intl.startsWith('234') ? `0${intl.slice(3)}` : `+${intl}`;
 }
 
 /** Loads .env into process.env if the file exists. Real environment variables win. */

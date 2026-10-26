@@ -1,0 +1,70 @@
+# Render blueprint for the bot (free web service). Secrets have sync: false: set them in the
+# Render dashboard, never here. See README "Deploy" and docs/ARCHITECTURE.md section 10.
+services:
+  - type: web
+    name: geminipro
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    startCommand: pnpm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: PUBLIC_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        value: geminiprosamkiel_bot
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: ADMIN_TELEGRAM_IDS
+        sync: false
+      - key: BACHS_SECRET_KEY
+        sync: false
+      - key: BACHS_WEBHOOK_SECRET
+        sync: false
+      - key: BACHS_BASE_URL
+        sync: false
+      - key: GROSS_UP
+        value: "false"
+      - key: FEE_PCT
+        value: "0.02"
+      - key: FEE_FLAT
+        value: "0"
+      - key: RESELLER_API_KEY
+        sync: false
+      - key: RESELLER_PRODUCT_ID
+        value: "1"
+      - key: RESELLER_MOCK
+        value: "false"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_FALLBACK_MODELS
+        value: openai/gpt-oss-20b,qwen/qwen3.8-27b
+      - key: DATABASE_URL
+        sync: false
+      - key: UNIT_PRICE_NGN
+        value: "3500"
+      - key: MAX_QTY_PER_ORDER
+        value: "10"
+      - key: LOW_BALANCE_ORDERS
+        value: "5"
+      - key: SUPPORT_WHATSAPP_INTL
+        value: "2348087357158"
+      - key: REMINDER_DELAY_MINUTES
+        value: "180"
+      - key: ALERT_EMAIL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: NTFY_TOPIC
+        sync: false
+      - key: SALES_CUTOFF
+        sync: false
