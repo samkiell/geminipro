@@ -2,11 +2,11 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { events, type Order } from '../db/schema.js';
+import { events } from '../db/schema.js';
 import type { CheckoutSession } from '../services/bachs.js';
 import type { Notify } from '../services/notifier.js';
 import { findOrderForPayment, holdPayment, markPaid, PAYABLE } from '../services/orders.js';
-import type { PaymentProvider } from '../services/payments.js';
+import { paymentProblem, type PaymentProvider } from '../services/payments.js';
 
 export interface BachsWebhookOptions {
   db: Db;
@@ -57,6 +57,7 @@ export const bachsWebhookRoutes: FastifyPluginAsync<BachsWebhookOptions> = async
         level: 'warning',
         title: 'webhook signature failure',
         body: `Rejected a Bachs webhook with a bad signature from ${req.ip}.`,
+        cooldownKey: 'webhook_signature',
       });
       return reply.code(401).send({ ok: false });
     }
@@ -151,23 +152,6 @@ async function handleEvent(opts: BachsWebhookOptions, event: Envelope, log: Fast
       .catch((err: unknown) => orderLog.error({ err }, 'fulfilment trigger failed'));
   });
   return { status: 200, result: 'paid' };
-}
-
-/** Why a completed checkout must not mark the order paid, or undefined if it may. */
-function paymentProblem(order: Order, checkout: CheckoutSession): string | undefined {
-  if (checkout.reference !== order.paymentReference) {
-    return `checkout reference ${checkout.reference ?? 'none'} is not ${order.paymentReference}`;
-  }
-  if (checkout.currency !== 'NGN') return `paid in ${checkout.currency}, expected NGN`;
-  if (checkout.paymentStatus && !['succeeded', 'paid'].includes(checkout.paymentStatus)) {
-    return `payment status is ${checkout.paymentStatus}`;
-  }
-  // Exactly the amount the checkout was created for (the Bachs docs: match amount and currency).
-  const expectedMinor = order.amountNgn * 100;
-  if (checkout.amountMinor !== expectedMinor) {
-    return `checkout amount ${checkout.amountMinor / 100} NGN does not match the order amount ${order.amountNgn} NGN`;
-  }
-  return undefined;
 }
 
 async function eventSeen(db: Db, eventId: string): Promise<boolean> {
