@@ -19,9 +19,11 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "mock:reseller": "tsx test/mocks/reseller-server.ts",
     "order:test": "tsx scripts/create-test-order.ts",
-    "eval:agent": "tsx scripts/eval-agent.ts"
+    "eval:agent": "tsx scripts/eval-agent.ts",
+    "webhook:set": "tsx scripts/set-webhook.ts"
   },
   "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
     "drizzle-orm": "^0.45.4",
     "fastify": "^5.12.7",
     "grammy": "^1.46.0",

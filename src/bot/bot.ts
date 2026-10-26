@@ -1,67 +1,93 @@
 import { sql } from 'drizzle-orm';
-import { Bot, InlineKeyboard, type Context } from 'grammy';
-import type { UserFromGetMe } from 'grammy/types';
+import { eq } from 'drizzle-orm';
+import type { Bot, Context } from 'grammy';
+import type { AgentReply } from '../agent/agent.js';
+import { detectLang, noteLanguage, type Lang } from '../agent/buyer.js';
+import { createPicker, isOwnerQuestion, isPurchaseRequest, quantityIn, scriptedTurn } from '../agent/fallback.js';
+import { saveTurn } from '../agent/history.js';
+import type { ToolContext } from '../agent/tools.js';
+import type { HelpPage } from '../content/help.js';
 import type { Db } from '../db/client.js';
 import { users } from '../db/schema.js';
-import type { AgentReply, ChatTurn } from '../agent/agent.js';
-import {
-  fallbackReply,
-  menuButtons,
-  paymentText,
-  priceText,
-  supportText,
-  whatsappUrl,
-  type Button,
-  type FallbackFacts,
-} from '../agent/fallback.js';
-import { loadHistory, saveTurn } from '../agent/history.js';
-import { naira, spokenDate } from '../agent/prompt.js';
-import type { BuyerServices, PayButton, PaymentLinkResult, ToolContext } from '../agent/tools.js';
-import { findPendingOrder } from '../services/orders.js';
+import { OWNER_LINKS, ownerButtons } from '../knowledge/owner.js';
+import { findOwnOrder, UNPAID_OPEN } from '../services/orders.js';
 import type { Logger } from '../util/logger.js';
+import type { Flows } from './flows.js';
+import type { Keyboard, TelegramPort } from './telegram.js';
+import { cb, STALE_BUTTON, type UiFacts } from './views.js';
+
+// Buyer side of the bot: four commands (/start /buy /history /help), button taps, and free text
+// for the agent. Anything visual goes through flows; this file only routes.
 
 export interface BotDeps {
-  token: string;
-  /** Skips getMe; for tests. */
-  botInfo?: UserFromGetMe;
   db: Db;
   logger: Logger;
-  services: BuyerServices;
-  agent: (input: { history: ChatTurn[]; userText: string; ctx: ToolContext }) => Promise<AgentReply>;
-  facts: FallbackFacts & { offerDeadline: string };
+  port: TelegramPort;
+  flows: Flows;
+  facts: UiFacts;
+  agent: {
+    available: () => boolean;
+    reply: (input: { userText: string; ctx: ToolContext }) => Promise<AgentReply>;
+  };
+  saveLead: (telegramId: number, username: string | undefined, summary: string) => Promise<'saved' | 'limited'>;
   /** Per user. Default 20 messages per 10 minutes (docs/ARCHITECTURE.md 5.1). */
   rateLimit?: { max: number; windowMs: number };
+  /** Admin commands, registered before the buyer ones (they never reach non admins). */
+  registerAdmin?: (bot: Bot) => void;
 }
 
 const MAX_USER_TEXT = 1_000;
+const HELP_PAGES = new Set<string>(['hub', 'how', 'get', 'activate', 'plan', 'policy', 'offer']);
+const MENU: Keyboard = [
+  [{ text: 'buy a link', data: cb.buy(1) }],
+  [
+    { text: 'my orders', data: cb.history(1) },
+    { text: 'help', data: cb.help('hub') },
+  ],
+];
 
-export function keyboard(rows: Button[][]): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  rows.forEach((row, i) => {
-    for (const button of row) {
-      if ('url' in button) kb.url(button.text, button.url);
-      else kb.text(button.text, button.callbackData);
-    }
-    if (i < rows.length - 1) kb.row();
-  });
-  return kb;
-}
+export function registerBot(bot: Bot, deps: BotDeps): void {
+  const { db, port, flows, logger } = deps;
+  const pickFor = createPicker();
+  // Replies with buttons that stop meaning anything once the buyer moves on (Prompt A section 4).
+  const ephemeral = new Map<number, number>();
 
-export function payKeyboard(button: PayButton): InlineKeyboard {
-  return new InlineKeyboard().url('pay now', button.url);
-}
+  async function clearEphemeral(telegramId: number): Promise<void> {
+    const messageId = ephemeral.get(telegramId);
+    if (messageId === undefined) return;
+    ephemeral.delete(telegramId);
+    await port.setButtons(telegramId, messageId);
+  }
 
-export function createBot(deps: BotDeps): Bot {
-  const { db, facts, services, logger } = deps;
-  const bot = new Bot(deps.token, {
-    client: { timeoutSeconds: 15 },
-    ...(deps.botInfo && { botInfo: deps.botInfo }),
-  });
+  async function reply(telegramId: number, text: string, keyboard?: Keyboard): Promise<void> {
+    const id = await port.send(telegramId, { text, ...(keyboard && { keyboard }) });
+    if (keyboard) ephemeral.set(telegramId, id);
+    if (ephemeral.size > 10_000) ephemeral.clear();
+  }
 
-  // Only private chats. Groups and channels are ignored.
+  // Private chats only.
   bot.use(async (ctx, next) => {
     if (ctx.chat?.type !== 'private') return;
     await next();
+  });
+
+  // One update at a time per user, in order: double taps and quick messages never race.
+  const chains = new Map<number, Promise<void>>();
+  bot.use(async (ctx, next) => {
+    const key = ctx.chat?.id;
+    if (key === undefined) return next();
+    const previous = chains.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => (release = resolve));
+    const chain = previous.then(() => mine);
+    chains.set(key, chain);
+    await previous;
+    try {
+      await next();
+    } finally {
+      release();
+      if (chains.get(key) === chain) chains.delete(key);
+    }
   });
 
   // Keep the users row fresh. Hearing from someone means they have not blocked us.
@@ -72,201 +98,210 @@ export function createBot(deps: BotDeps): Bot {
         .values({ telegramId: ctx.from.id, username: ctx.from.username ?? null, firstName: ctx.from.first_name })
         .onConflictDoUpdate({
           target: users.telegramId,
-          set: {
-            username: ctx.from.username ?? null,
-            firstName: ctx.from.first_name,
-            lastSeenAt: sql`now()`,
-            blocked: false,
-          },
+          set: { username: ctx.from.username ?? null, firstName: ctx.from.first_name, lastSeenAt: sql`now()`, blocked: false },
         });
     }
     await next();
   });
 
-  bot.use(rateLimiter(deps.rateLimit ?? { max: 20, windowMs: 10 * 60_000 }));
+  bot.use(rateLimiter(deps.rateLimit ?? { max: 20, windowMs: 10 * 60_000 }, port));
 
-  const menu = () => keyboard(menuButtons(facts));
+  deps.registerAdmin?.(bot);
 
   bot.command('start', async (ctx) => {
-    await ctx.reply(
-      `hi${ctx.from?.first_name ? ` ${ctx.from.first_name.toLowerCase()}` : ''}! i sell google ai pro 18 month activation links (jio offer) for ${naira(facts.unitPriceNgn)} each. ` +
-        `pay here, and the link comes to this chat automatically. ask me anything, or tap below.`,
-      { reply_markup: menu() },
-    );
+    await clearEphemeral(ctx.chat.id);
+    await flows.showStart(ctx.chat.id, ctx.from?.first_name);
   });
-
-  bot.command('help', async (ctx) => {
-    await ctx.reply(
-      [
-        'just tell me what you need, or use:',
-        '/buy 1 to buy one link (or /buy 3 for three)',
-        '/status to see your orders and get your links again',
-        '/cancel to cancel an unpaid order',
-        `the offer closes ${spokenDate(facts.offerDeadline)}, so activate soon after buying.`,
-        supportText(facts),
-      ].join('\n'),
-      { reply_markup: menu() },
-    );
-  });
-
   bot.command('buy', async (ctx) => {
-    const quantity = ctx.match.trim() === '' ? 1 : Number(ctx.match.trim());
-    await replyWithPayment(ctx, await services.createPaymentLink(ctx.from?.id ?? 0, quantity));
+    await clearEphemeral(ctx.chat.id);
+    await flows.startBuy(ctx.chat.id, Number(ctx.match.trim()) || 1);
+  });
+  bot.command('history', async (ctx) => {
+    await clearEphemeral(ctx.chat.id);
+    await flows.showHistory(ctx.chat.id, 1);
+  });
+  bot.command('help', async (ctx) => {
+    await clearEphemeral(ctx.chat.id);
+    await flows.showHelp(ctx.chat.id, 'hub');
   });
 
-  bot.command('cancel', async (ctx) => {
-    const { cancelled } = await services.cancelPendingOrder(ctx.from?.id ?? 0);
-    await ctx.reply(cancelled ? 'done, your unpaid order is cancelled.' : "you don't have an unpaid order.");
-  });
+  bot.on('callback_query:data', async (ctx) => {
+    const telegramId = ctx.from.id;
+    const queryId = ctx.callbackQuery.id;
+    const messageId = ctx.callbackQuery.message?.message_id;
+    const [kind = '', a = '', b = ''] = ctx.callbackQuery.data.split(':');
 
-  bot.command('status', async (ctx) => {
-    const telegramId = ctx.from?.id ?? 0;
-    const orders = await services.getMyOrders(telegramId);
-    if (orders.length === 0) {
-      await ctx.reply('you have no orders yet. send /buy to get a link.', { reply_markup: menu() });
-      return;
-    }
-    const lines = orders.map((o) => {
-      const date = new Date(o.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'Africa/Lagos' });
-      return `${date.toLowerCase()}: ${o.quantity} link${o.quantity === 1 ? '' : 's'}, ${naira(o.totalNgn)}, ${o.meaning}`;
-    });
-    const kb = new InlineKeyboard();
-    const pending = await findPendingOrder(db, telegramId);
-    if (pending?.checkoutUrl) kb.url('pay now', pending.checkoutUrl).row();
-    const withLinks = orders.find((o) => o.status === 'delivered' || o.status === 'partial');
-    if (withLinks) kb.text('send my links again', `resend:${withLinks.orderRef}`);
-    await ctx.reply(['your recent orders:', ...lines].join('\n'), { reply_markup: kb });
-  });
+    const stale = async () => {
+      await port.answer(queryId, STALE_BUTTON);
+      if (messageId) await port.setButtons(telegramId, messageId);
+    };
+    // Ids in callback data are never trusted: the order must belong to whoever tapped.
+    const owned = async (orderId: string) => findOwnOrder(db, telegramId, orderId);
 
-  bot.callbackQuery('buy:1', async (ctx) => {
-    await ctx.answerCallbackQuery();
-    await replyWithPayment(ctx, await services.createPaymentLink(ctx.from.id, 1));
-  });
-
-  bot.callbackQuery('price', async (ctx) => {
-    await ctx.answerCallbackQuery();
-    await ctx.reply(priceText(facts), { reply_markup: menu() });
-  });
-
-  bot.callbackQuery('support', async (ctx) => {
-    await ctx.answerCallbackQuery();
-    await ctx.reply(supportText(facts), {
-      reply_markup: new InlineKeyboard().url('whatsapp support', whatsappUrl(facts.supportWhatsapp)),
-    });
-  });
-
-  bot.callbackQuery(/^resend:([0-9a-f]{8})$/, async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const result = await services.resendMyLinks(ctx.from.id, ctx.match[1]);
-    if ('error' in result) {
-      const why =
-        result.error === 'resend_limit_reached'
-          ? `that order's links were already resent a few times. whatsapp ${facts.supportWhatsapp} if you still need them.`
-          : `i couldn't resend those links. whatsapp ${facts.supportWhatsapp} and we'll help.`;
-      await ctx.reply(why);
+    switch (kind) {
+      case 'n':
+        await port.answer(queryId);
+        return;
+      case 'b': {
+        await port.answer(queryId);
+        if (messageId && ephemeral.get(telegramId) === messageId) await clearEphemeral(telegramId);
+        await flows.startBuy(telegramId, Number(a) || 1);
+        return;
+      }
+      case 'q': {
+        const order = await owned(a);
+        if (!messageId || !order || !UNPAID_OPEN.includes(order.status) || order.summaryMessageId !== messageId) return stale();
+        await port.answer(queryId);
+        const result = await flows.changeQuantity(telegramId, messageId, a, Number(b));
+        if (!result.ok && result.reason === 'stale' && messageId) await port.setButtons(telegramId, messageId);
+        return;
+      }
+      case 'x': {
+        const order = await owned(a);
+        if (!order || !UNPAID_OPEN.includes(order.status)) return stale();
+        await port.answer(queryId, 'cancelled');
+        await flows.cancelFromCard(telegramId, a);
+        return;
+      }
+      case 'h':
+        await port.answer(queryId);
+        await flows.showHistory(telegramId, Number(a) || 1, messageId);
+        return;
+      case 'o': {
+        if (!(await owned(a))) return stale();
+        await port.answer(queryId);
+        await flows.showOrder(telegramId, a, Number(b) || 1, messageId);
+        return;
+      }
+      case 'l': {
+        if (!(await owned(a))) return stale();
+        if (!flows.allowLinks(telegramId)) {
+          await port.answer(queryId, 'too many taps, try again in a minute');
+          return;
+        }
+        await port.answer(queryId);
+        await flows.showLinks(telegramId, a);
+        return;
+      }
+      case 'hp':
+        if (!HELP_PAGES.has(a)) return stale();
+        await port.answer(queryId);
+        await flows.showHelp(telegramId, a as HelpPage | 'hub', messageId);
+        return;
+      case 'a': {
+        const order = await owned(b);
+        if (!messageId || !order || (a !== 'y' && a !== 'h')) return stale();
+        await port.answer(queryId);
+        await flows.answerActivation(telegramId, messageId, b, a === 'y' ? 'yes' : 'help', ctx.from.username);
+        return;
+      }
+      default:
+        await stale();
     }
   });
 
   bot.on('message:text', async (ctx) => {
     const telegramId = ctx.from.id;
+    const username = ctx.from.username;
     const userText = ctx.message.text.slice(0, MAX_USER_TEXT);
     if (userText.startsWith('/')) {
-      await ctx.reply("i don't know that command. send /help to see what i can do.");
+      await port.send(telegramId, { text: "i don't know that command. try /buy, /history or /help." });
       return;
     }
 
-    await ctx.replyWithChatAction('typing').catch(() => {});
-    const toolCtx: ToolContext = { telegramId };
-    let reply: AgentReply;
-    try {
-      reply = await deps.agent({ history: await loadHistory(db, telegramId), userText, ctx: toolCtx });
-    } catch (err) {
-      logger.error({ err, telegramId }, 'agent turn crashed; using the scripted fallback');
-      reply = { text: '', failed: true, toolCalls: [], ...(toolCtx.payButton && { payButton: toolCtx.payButton }) };
+    await clearEphemeral(telegramId);
+    await noteLanguage(db, telegramId, userText);
+    const lang = detectLang(userText) ?? (await storedLang(db, telegramId));
+
+    const toolCtx: ToolContext = { telegramId, username, attachments: [] };
+    let answer: AgentReply | undefined;
+    if (deps.agent.available()) {
+      await ctx.replyWithChatAction('typing').catch(() => {});
+      try {
+        answer = await deps.agent.reply({ userText, ctx: toolCtx });
+      } catch (err) {
+        logger.error({ err, telegramId }, 'agent turn crashed; answering with a scripted reply');
+      }
     }
 
-    let text = reply.text;
-    let markup: InlineKeyboard | undefined;
-    if (reply.payButton) {
-      if (reply.failed) text = paymentText(reply.payButton);
-      markup = payKeyboard(reply.payButton);
-    } else if (reply.failed) {
-      const scripted = fallbackReply(userText, facts);
-      text = scripted.text;
-      markup = keyboard(scripted.buttons);
-    } else if (/\b(pay now|tap|button)\b/i.test(text)) {
-      // The model talked about a button that does not exist; give them real ones.
-      markup = menu();
+    let saved: string;
+    if (answer && !answer.failed) {
+      // A clear "i want to pay now" must end with the card, even if the model only quoted a price.
+      if (!toolCtx.cardShown && isPurchaseRequest(userText)) {
+        const outcome = await flows.startBuy(telegramId, quantityIn(userText) ?? 1);
+        if (outcome.ok) toolCtx.cardShown = outcome;
+      }
+      // Questions about the maker always get his links, even when the model answered from memory.
+      if (toolCtx.attachments.length === 0 && isOwnerQuestion(userText)) {
+        toolCtx.attachments.push(ownerButtons('identity').map((name) => ({ text: name, url: OWNER_LINKS[name] })));
+      }
+      const keyboard = toolCtx.attachments.length > 0 ? toolCtx.attachments : undefined;
+      // The model talked about a button that is not there: give them real ones.
+      const phantom = !keyboard && !toolCtx.cardShown && /\b(tap|button|pay now)\b/i.test(answer.text);
+      await reply(telegramId, answer.text, keyboard ?? (phantom ? MENU : undefined));
+      saved = answer.text;
+    } else if (toolCtx.cardShown) {
+      saved = "your order card is above. tap pay when you're ready.";
+      await reply(telegramId, saved);
+    } else {
+      saved = await scripted(telegramId, username, userText, lang);
     }
 
-    await ctx.reply(text, {
-      link_preview_options: { is_disabled: true },
-      ...(markup && { reply_markup: markup }),
-    });
     await saveTurn(db, telegramId, 'user', userText);
-    await saveTurn(db, telegramId, 'assistant', text);
+    await saveTurn(db, telegramId, 'assistant', saved);
   });
 
   bot.on('message', async (ctx) => {
-    await ctx.reply('i can only read text messages. tell me what you need, or send /help.');
+    await port.send(ctx.chat.id, { text: 'i can only read text messages. tell me what you need, or send /help.' });
   });
 
   bot.catch(({ error, ctx }) => {
     logger.error({ err: error, updateId: ctx.update.update_id }, 'bot handler failed');
   });
 
-  async function replyWithPayment(ctx: Context, result: PaymentLinkResult): Promise<void> {
-    if (result.ok) {
-      const button = { orderId: result.orderId, url: result.checkoutUrl, quantity: result.quantity, totalNgn: result.totalNgn };
-      await ctx.reply(paymentText(button), { reply_markup: payKeyboard(button) });
-      return;
-    }
-    switch (result.error) {
-      case 'pending_order_exists': {
-        const what = result.quantity === 1 ? '1 link' : `${result.quantity} links`;
-        const text = `you already have an unpaid order for ${what}, total ${naira(result.totalNgn)}. pay it below, or send /cancel to start over.`;
-        await ctx.reply(
-          text,
-          result.checkoutUrl
-            ? { reply_markup: payKeyboard({ orderId: result.orderId, url: result.checkoutUrl, quantity: result.quantity, totalNgn: result.totalNgn }) }
-            : {},
-        );
-        return;
+  /** Rate limited, busy or down model: act on what they asked anyway. Returns what to remember. */
+  async function scripted(telegramId: number, username: string | undefined, userText: string, lang: Lang): Promise<string> {
+    const action = scriptedTurn(userText, { lang, facts: deps.facts, pick: pickFor(telegramId) });
+    switch (action.kind) {
+      case 'buy':
+        await flows.startBuy(telegramId, action.quantity);
+        return `[showed the order card for ${action.quantity}]`;
+      case 'history':
+        await flows.showHistory(telegramId, 1);
+        return '[showed their order history]';
+      case 'order':
+        if (!(await flows.showOrderByNo(telegramId, action.orderNo))) {
+          await reply(telegramId, `i couldn't find order ${action.orderNo} on your account. tap below to see your orders.`, [
+            [{ text: 'my orders', data: cb.history(1) }],
+          ]);
+        }
+        return `[showed order ${action.orderNo}]`;
+      case 'help':
+        await flows.showHelp(telegramId, action.page);
+        return `[showed help: ${action.page}]`;
+      case 'cancel': {
+        const text = (await flows.cancelPending(telegramId)) ? 'done, your unpaid order is cancelled.' : "you don't have an unpaid order.";
+        await reply(telegramId, text);
+        return text;
       }
-      case 'not_enough_stock':
-        await ctx.reply(
-          result.maxQuantity > 0
-            ? `i can only sell ${result.maxQuantity} right now. send /buy ${result.maxQuantity} to get them.`
-            : `we're out of links right now. please check back soon, or whatsapp ${facts.supportWhatsapp}.`,
-        );
-        return;
-      case 'invalid_quantity':
-        await ctx.reply(`you can buy 1 to ${result.maxQuantity} links per order, for example /buy 3.`);
-        return;
-      case 'sales_paused':
-        await ctx.reply('sales are paused for a moment. please check back shortly.');
-        return;
-      case 'sales_closed':
-        await ctx.reply('sales have closed, the offer has ended. thank you!');
-        return;
-      case 'payment_link_failed':
-        await ctx.reply("i couldn't create the payment link just now. please try again in a minute.");
-        return;
+      case 'lead':
+        await deps.saveLead(telegramId, username, userText);
+        await reply(telegramId, action.text, action.keyboard);
+        return action.text;
+      case 'reply':
+        await reply(telegramId, action.text, action.keyboard);
+        return action.text;
     }
   }
-
-  return bot;
 }
 
-/** Sends a message with a pay now button; used for the abandoned payment nudge. */
-export function payButtonSender(bot: Bot) {
-  return async (chatId: number, text: string, button: PayButton): Promise<void> => {
-    await bot.api.sendMessage(chatId, text, { reply_markup: payKeyboard(button) });
-  };
+async function storedLang(db: Db, telegramId: number): Promise<Lang> {
+  const [user] = await db.select({ lang: users.lang }).from(users).where(eq(users.telegramId, telegramId));
+  return user?.lang ?? 'en';
 }
 
 /** In memory, per process: fine for one instance. Warns once per window, then stays quiet. */
-function rateLimiter({ max, windowMs }: { max: number; windowMs: number }) {
+function rateLimiter({ max, windowMs }: { max: number; windowMs: number }, port: TelegramPort) {
   const hits = new Map<number, number[]>();
   const warned = new Map<number, number>();
   return async (ctx: Context, next: () => Promise<void>) => {
@@ -276,10 +311,12 @@ function rateLimiter({ max, windowMs }: { max: number; windowMs: number }) {
     const recent = (hits.get(id) ?? []).filter((t) => now - t < windowMs);
     recent.push(now);
     hits.set(id, recent);
+    if (hits.size > 50_000) hits.clear();
     if (recent.length <= max) return next();
+    if (ctx.callbackQuery) await port.answer(ctx.callbackQuery.id, 'slow down a little, try again in a few minutes');
     if (now - (warned.get(id) ?? 0) > windowMs) {
       warned.set(id, now);
-      await ctx.reply("you're sending a lot of messages. give me a few minutes, then try again.").catch(() => {});
+      await port.send(id, { text: "you're sending a lot of messages. give me a few minutes, then try again." }).catch(() => {});
     }
   };
 }
