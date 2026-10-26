@@ -78,6 +78,18 @@ export function linksMessage({ links, quantity, first, remaining, supportWhatsap
   return lines.join('\n');
 }
 
+/** Links sent again on request (resend_my_links, /status). */
+export function resendMessage({ links, quantity, supportWhatsapp }: Omit<LinksMessageInput, 'first' | 'remaining'>): string {
+  const single = quantity === 1;
+  return [
+    single ? 'here is your link again:' : 'here are your links again:',
+    ...links.map(({ number, link }) => (single ? link : `${number}. ${link}`)),
+    '',
+    'sign in to the google account you want it on, and activate soon, the offer is ending.',
+    `any issue, whatsapp ${supportWhatsapp}`,
+  ].join('\n');
+}
+
 /** Sent once when a paid order could not be fulfilled at all on the first try. */
 export function delayedMessage({ quantity, supportWhatsapp }: { quantity: number; supportWhatsapp: string }): string {
   const single = quantity === 1;
