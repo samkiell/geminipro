@@ -24,6 +24,12 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z
     .string()
     .regex(/^\d+:[A-Za-z0-9_-]+$/, 'expected a BotFather token like 123456789:AAE...'),
+  // Without the @. The bot's public link is https://t.me/<username>.
+  TELEGRAM_BOT_USERNAME: z
+    .string()
+    .transform((s) => s.replace(/^@/, ''))
+    .pipe(z.string().regex(/^[A-Za-z0-9_]{5,32}$/, 'expected a bot username like geminiprosamkiel_bot'))
+    .default('geminiprosamkiel_bot'),
   // Telegram only allows A-Z, a-z, 0-9, _ and - in secret_token.
   TELEGRAM_WEBHOOK_SECRET: z
     .string()
@@ -34,12 +40,18 @@ const envSchema = z.object({
       .min(1, 'expected at least one admin Telegram user id'),
   ),
 
-  PAYSTACK_SECRET_KEY: z
+  // sk_sandbox_ keys talk to sandbox-api.bachs.io, sk_live_ keys to api.bachs.io.
+  BACHS_SECRET_KEY: z
     .string()
-    .regex(/^sk_(test|live)_[A-Za-z0-9]+$/, 'expected a secret key starting with sk_test_ or sk_live_'),
-  GROSS_UP: bool(true),
-  FEE_PCT: z.coerce.number().min(0).lt(1, 'expected a fraction like 0.015').default(0.015),
-  FEE_FLAT: int().min(0).default(100),
+    .regex(/^sk_(sandbox|live)_[A-Za-z0-9_-]+$/, 'expected a secret key starting with sk_sandbox_ or sk_live_'),
+  // Signing secret of the webhook endpoint (developer portal, or printed by `bachs listen`).
+  // Unset: the app still runs, but answers webhooks with 503 so Bachs retries them later.
+  BACHS_WEBHOOK_SECRET: z.string().optional(),
+  // false: the Bachs account's fee_preference is customer_pays, so Bachs adds the fee at checkout.
+  // true: the account absorbs fees (org_pays) and the bot adds FEE_PCT/FEE_FLAT to the total itself.
+  GROSS_UP: bool(false),
+  FEE_PCT: z.coerce.number().min(0).lt(1, 'expected a fraction like 0.02').default(0.02),
+  FEE_FLAT: int().min(0).default(0),
 
   RESELLER_BASE_URL: z.url().default('https://api-geminipro.ignorelist.com/api/reseller/v1'),
   RESELLER_API_KEY: z.string(),
@@ -69,20 +81,20 @@ const envSchema = z.object({
     .transform((s) => new Date(s))
     .optional(),
 }).superRefine((env, ctx) => {
-  // Test payments must never buy real links, and real payments must never get mock links.
-  const livePayments = env.PAYSTACK_SECRET_KEY.startsWith('sk_live_');
+  // Sandbox payments must never buy real links, and real payments must never get mock links.
+  const livePayments = env.BACHS_SECRET_KEY.startsWith('sk_live_');
   if (livePayments && env.RESELLER_MOCK) {
     ctx.addIssue({
       code: 'custom',
       path: ['RESELLER_MOCK'],
-      message: 'must be false with a live Paystack key, or buyers pay real money for mock links',
+      message: 'must be false with a live Bachs key, or buyers pay real money for mock links',
     });
   }
   if (!livePayments && !env.RESELLER_MOCK) {
     ctx.addIssue({
       code: 'custom',
       path: ['RESELLER_MOCK'],
-      message: 'must be true with a Paystack test key, or test payments spend the real reseller balance',
+      message: 'must be true with a Bachs sandbox key, or sandbox payments spend the real reseller balance',
     });
   }
 });
@@ -111,6 +123,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   throw new ConfigError(
     `Invalid environment configuration:\n${problems.join('\n')}\nSee .env.example for every variable.`,
   );
+}
+
+export function botLink(config: Pick<Config, 'TELEGRAM_BOT_USERNAME'>): string {
+  return `https://t.me/${config.TELEGRAM_BOT_USERNAME}`;
 }
 
 /** Loads .env into process.env if the file exists. Real environment variables win. */
