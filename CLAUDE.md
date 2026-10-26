@@ -8,5 +8,5 @@ Rules:
 - Never log secrets or activation links. Redact them.
 - Never use em dashes in any user facing text.
 - Every external call has a timeout. Every reseller purchase uses an idempotency key.
-- Keep changes small, add tests for money and state logic, run `npm run typecheck && npm test` before finishing a task.
+- Keep changes small, add tests for money and state logic, run `pnpm typecheck && pnpm test` before finishing a task.
 - Do not commit .env. Keep .env.example updated.
