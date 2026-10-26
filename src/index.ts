@@ -15,6 +15,7 @@ import { grammyPort } from './bot/telegram.js';
 import type { UiFacts } from './bot/views.js';
 import { botLink, ConfigError, loadConfig, loadDotEnv, localPhone, type Config } from './config.js';
 import { createDb } from './db/client.js';
+import { startMockReseller } from './dev/mock-reseller.js';
 import { buildServer } from './server.js';
 import { BachsClient, BachsProvider } from './services/bachs.js';
 import { createFulfilment } from './services/fulfilment.js';
@@ -58,7 +59,7 @@ async function main(): Promise<void> {
     logger.error({ err }, 'database not reachable at boot');
   }
 
-  if (config.RESELLER_MOCK && config.NODE_ENV === 'development') await startDevMockReseller(config, logger);
+  if (config.RESELLER_MOCK) await startInProcessMockReseller(config, logger);
 
   // One Bot API client for everything we send: timeouts, and Telegram's own 429s retried.
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN, { client: { timeoutSeconds: 15 } });
@@ -74,6 +75,7 @@ async function main(): Promise<void> {
     alertEmailFrom: config.ALERT_EMAIL_FROM,
     resendApiKey: config.RESEND_API_KEY,
     ntfyTopic: config.NTFY_TOPIC,
+    ...(config.NTFY_SERVER && { ntfyServer: config.NTFY_SERVER.replace(/\/+$/, '') }),
   });
 
   const facts: UiFacts = {
@@ -261,20 +263,17 @@ async function checkFeeSetup(payments: BachsProvider, config: Config, notify: No
 }
 
 /**
- * Dev convenience: run the in-memory mock reseller inside `pnpm dev`, so a sandbox payment can be
- * fulfilled without a second terminal. The mock lives in test/, so it only exists under tsx.
+ * Sandbox only (config refuses RESELLER_MOCK=true with a live Bachs key): run the in-memory mock
+ * reseller inside the app, so a sandbox payment is fulfilled end to end, locally or on Render.
+ * It listens on 127.0.0.1 only.
  */
-async function startDevMockReseller(config: Config, logger: Logger): Promise<void> {
+async function startInProcessMockReseller(config: Config, logger: Logger): Promise<void> {
   const port = Number(new URL(config.RESELLER_MOCK_URL).port);
-  const modulePath = '../test/mocks/reseller-server.js';
   try {
-    const mock = (await import(modulePath)) as {
-      startMockReseller: (options: { port: number }) => Promise<{ url: string }>;
-    };
-    const { url } = await mock.startMockReseller({ port });
+    const { url } = await startMockReseller({ port });
     logger.info({ url }, 'mock reseller running (RESELLER_MOCK=true)');
   } catch (err) {
-    logger.warn({ err }, 'could not start the mock reseller here; run `pnpm mock:reseller` if purchases fail');
+    logger.warn({ err }, 'could not start the mock reseller here; is `pnpm mock:reseller` already running?');
   }
 }
 

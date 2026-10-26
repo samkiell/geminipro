@@ -3,7 +3,8 @@ import { pathToFileURL } from 'node:url';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
 // In-memory stand-in for the reseller API (same paths, bodies and error shape).
-// Tests drive it through the returned control object; `npm run mock:reseller` runs it
+// Tests drive it through the returned control object. With RESELLER_MOCK=true the app runs it
+// in process (sandbox only, see config); `pnpm mock:reseller` runs it
 // standalone and exposes the same controls at POST /__mock/control.
 
 const PREFIX = '/api/reseller/v1';

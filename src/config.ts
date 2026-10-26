@@ -59,7 +59,7 @@ const envSchema = z.object({
   RESELLER_API_KEY: z.string(),
   RESELLER_PRODUCT_ID: int().positive(),
   RESELLER_MOCK: bool(false),
-  // Used instead of RESELLER_BASE_URL when RESELLER_MOCK=true (npm run mock:reseller).
+  // Used instead of RESELLER_BASE_URL when RESELLER_MOCK=true; the app runs the mock there itself.
   RESELLER_MOCK_URL: z.url().default('http://127.0.0.1:4010/api/reseller/v1'),
 
   GROQ_API_KEY: z.string(),
@@ -84,6 +84,8 @@ const envSchema = z.object({
   ALERT_EMAIL_FROM: z.string().default('geminipro alerts <hello@samkiel.dev>'),
   RESEND_API_KEY: z.string().optional(),
   NTFY_TOPIC: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'expected an ntfy topic name (letters, digits, _ or -)'),
+  // Optional: a self hosted ntfy server instead of https://ntfy.sh.
+  NTFY_SERVER: z.url().optional(),
 
   // ISO time with an explicit offset, e.g. 2026-10-29T19:30:00+01:00. Unset means no cutoff.
   SALES_CUTOFF: z.iso
