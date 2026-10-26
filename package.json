@@ -11,13 +11,13 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/index.js",
+    "start": "node dist/db/migrate.js && node dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "mock:reseller": "tsx test/mocks/reseller-server.ts",
+    "mock:reseller": "tsx src/dev/mock-reseller.ts",
     "order:test": "tsx scripts/create-test-order.ts",
     "eval:agent": "tsx scripts/eval-agent.ts",
     "webhook:set": "tsx scripts/set-webhook.ts"

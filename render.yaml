@@ -6,7 +6,9 @@ services:
     runtime: node
     plan: free
     region: frankfurt
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    # --prod=false: the build needs TypeScript (a devDependency) whatever a pnpm version makes of NODE_ENV=production.
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm build
+    # Applies pending migrations, then boots the server.
     startCommand: pnpm start
     healthCheckPath: /health
     envVars:
@@ -40,8 +42,9 @@ services:
         sync: false
       - key: RESELLER_PRODUCT_ID
         value: "1"
+      # true with a sk_sandbox_ key (mock links, no real money), false with sk_live_. The app refuses any other pair.
       - key: RESELLER_MOCK
-        value: "false"
+        sync: false
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL
