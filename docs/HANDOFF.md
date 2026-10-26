@@ -1,6 +1,13 @@
 # Handoff: geminipro (@geminiprosamkiel_bot)
 
-State on 26 Oct 2026. Branch `main`, everything pushed. 250 tests pass; typecheck, lint and build are clean.
+State on 26 Oct 2026. Branch `main`, everything pushed. 251 tests pass; typecheck, lint and build are clean.
+
+## Production (since 26 Oct 2026)
+- Live at https://geminiprosamkiel.onrender.com with live Bachs keys, `RESELLER_MOCK=false`, `NODE_ENV=production`. `/health` shows the deployed commit.
+- The Render service was made by hand with npm defaults (`npm install; npm run build`, Node 26 from `engines`). `typescript` and `@types/node` are dependencies so that build works with `NODE_ENV=production` (`2c4d24a`).
+- The local `.env` uses the same Neon database and bot token as prod. Production marks the database (`settings.live_shop_database`): `pnpm dev` on it refuses to start, a running one stops its reconciler, and local polling never deletes a set webhook. Local work needs a Neon branch and a test bot.
+- Verified 26 Oct: health and database OK. The Telegram webhook route rejects requests without the secret and accepts the `.env` secret. The Bachs webhook secret is set (unsigned requests get 401). The Groq key works and all 3 models exist. The live reseller key works: balance $8.75 covers 7 links at $1.25, stock 151. No paid-but-undelivered test orders.
+- The prod database still has the sandbox test orders (12 delivered), so `/stats` includes them. The proof album's only item was `FHENIX SPEAKERS (5 of 109).jpg` (owner asked to remove with `/delproof 1`).
 
 ## What this is
 Telegram bot that sells Google AI Pro 18 month (Jio offer) activation links for ₦3,500 + fee. Node 22, TypeScript strict, Fastify, grammY, Drizzle + Neon Postgres, zod, pino, vitest (PGlite in-memory DB in tests), pnpm. Payments: Bachs (not Paystack). Links bought from a reseller API (mock reseller runs in-process when `RESELLER_MOCK=true`). LLM: Groq.
@@ -27,11 +34,11 @@ Read first: `CLAUDE.md` (rules), `docs/PRD.md`, `docs/ARCHITECTURE.md` (section 
 - Sales stats (`/stats` revenue, links) count `source='purchase'` only; rewards have their own line.
 
 ## Still open
-- **Live acceptance not run.** The Prompt D acceptance needs two real Telegram accounts in the Bachs sandbox with `RESELLER_MOCK=true`: + five times then continue (one order number), countdown ticks, pay, confetti, `/invite` shows 0 of 3, second account joins through the referral link and buys, first account shows 1 of 3, non member stopped at continue. The same paths are covered by the automated tests.
+- **Telegram webhook switch** to Render is for the owner to run (auto mode blocks it): `PUBLIC_URL=https://geminiprosamkiel.onrender.com pnpm webhook:set`.
+- **Live acceptance not run.** It needs real Telegram accounts: real purchase with confetti, channel gate with a non member, referral with a brand new account. The same paths are covered by the automated tests.
 - **Bachs session cancel** on cancel or expire is not implemented. Nobody has confirmed from the Bachs docs that the API supports it.
 - **Confetti id** `5046509860389126442` is the commonly used 🎉 effect. The Bot API docs do not list effect ids, so confirm it in the first live delivery. If Telegram rejects it, the message still goes out without the effect.
-- The local environment sets `NODE_TLS_REJECT_UNAUTHORIZED=0` (warning printed by `pnpm db:migrate`). Make sure it is not set on Render.
-- Untracked and left alone: `PROMPT_D_polish_referral_gate.md`, `assets/proof/FHENIX SPEAKERS (5 of 109).jpg`.
+- The owner's Windows environment sets `NODE_TLS_REJECT_UNAUTHORIZED=0` (not in `.env`). Make sure it is not set on Render.
 
 ## Rules (must follow)
 - Never commit `.env` or any secret. Before each commit run the secret scan: `git diff | grep -nE 'npg_[A-Za-z0-9]{6,}|rsp_live_[A-Za-z0-9]{20,}|sk_(live|sandbox)_[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9]{20,}|re_[A-Za-z0-9]{20,}'` must print nothing.
