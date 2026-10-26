@@ -70,6 +70,8 @@ const envSchema = z.object({
   MAX_QTY_PER_ORDER: int().positive().default(10),
   LOW_BALANCE_ORDERS: int().min(0).default(5),
   SUPPORT_WHATSAPP: z.string().default('08087357158'),
+  // Last day buyers can claim the offer (Jio's terms). The bot tells buyers to activate before it.
+  OFFER_DEADLINE: z.iso.date({ error: 'expected a date like 2026-10-29' }).default('2026-10-29'),
 
   ALERT_EMAIL: z.email().default('hello@samkiel.dev'),
   RESEND_API_KEY: z.string().optional(),
