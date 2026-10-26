@@ -53,6 +53,13 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 | `npm test` | vitest |
 | `npm run db:generate` | generate a new SQL migration after editing `src/db/schema.ts` |
 | `npm run db:migrate` | apply pending migrations |
+| `npm run mock:reseller` | run the mock reseller API on port 4010 (used when `RESELLER_MOCK=true`) |
+
+## Test mode and live mode
+
+Paystack test keys (`sk_test_`) must run with `RESELLER_MOCK=true`, and live keys (`sk_live_`) with `RESELLER_MOCK=false`. The app refuses to boot otherwise, because a test payment must never spend the real reseller balance and a real payment must never get a mock link.
+
+The mock reseller keeps everything in memory. While it runs, `POST http://127.0.0.1:4010/__mock/control` changes its behaviour, for example `{"set":{"stock":0}}`, `{"faults":["timeout"]}` or `{"failNthItem":{"n":2}}`. `GET /__mock/state` shows the current state.
 
 ## Changing the database schema
 
