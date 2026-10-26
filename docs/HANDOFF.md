@@ -1,47 +1,37 @@
 # Handoff: geminipro (@geminiprosamkiel_bot)
 
-State on 26 Oct 2026. Branch `main`, last pushed commit `a7a8ae0`. All 232 tests pass, typecheck, lint and build are clean.
+State on 26 Oct 2026. Branch `main`, everything pushed. 250 tests pass; typecheck, lint and build are clean.
 
 ## What this is
-Telegram bot that sells Google AI Pro 18 month (Jio offer) activation links for ₦3,500 + fee. Node 22, TypeScript strict, Fastify, grammY, Drizzle + Neon Postgres, zod, pino, vitest (PGlite in-memory DB in tests), pnpm. Payments: Bachs (not Paystack). Links bought from a reseller API (mock reseller runs in-process when `RESELLER_MOCK=true`). LLM: Groq free tier.
+Telegram bot that sells Google AI Pro 18 month (Jio offer) activation links for ₦3,500 + fee. Node 22, TypeScript strict, Fastify, grammY, Drizzle + Neon Postgres, zod, pino, vitest (PGlite in-memory DB in tests), pnpm. Payments: Bachs (not Paystack). Links bought from a reseller API (mock reseller runs in-process when `RESELLER_MOCK=true`). LLM: Groq.
 
-Read first: `CLAUDE.md` (rules), `docs/PRD.md`, `docs/ARCHITECTURE.md`, `README.md`, `RUNBOOK.md`, `docs/CLAUDE_CODE_PROMPTS.md`, `PROMPT_D_polish_referral_gate.md`.
+Read first: `CLAUDE.md` (rules), `docs/PRD.md`, `docs/ARCHITECTURE.md` (section 5B covers Prompt D), `README.md`, `RUNBOOK.md` (has the launch checklist), `docs/CLAUDE_CODE_PROMPTS.md`, `PROMPT_D_polish_referral_gate.md`.
 
 ## Done (all pushed to origin main)
-- Prompts 0 to 7 from `docs/CLAUDE_CODE_PROMPTS.md`.
-- Prompt A (Bachs, buyer UX), Prompt B (owner knowledge, leads, pidgin, buyer memory).
-- Prompt 6: admin commands, `/admin` panel with a button for every command, notifier, reconciler.
-- Link activation: every delivered link has a ✅ button, confirm step, then the link is closed.
-- Prompt C: single Groq call per message, fast paths, 5 min cache, model failover, proof screenshots.
-- **Prompt D Sections 1 through 5 are DONE**:
-  - **Section 1 (`940a399`)**: One response per action, clean copy deck, no "moved below" stubs, removed fee percentage mentions.
-  - **Sections 2 & 3 (`a77ba76`)**: Draft cart (`order_drafts` table, migration `0007_nasty_jack_flag.sql`), order numbers (GP-XXXX) only allocated on [continue], draft quantity adjustments edit in place, channel gate `@samkieldevtg` with fail-open and 30m alert cooldown.
-  - **Section 4 (`d0286b0`)**: Live payment countdown synced with Bachs (`src/services/countdown.ts` scheduler loop editing awaiting_payment cards every 30s, and every 10s in the final minute, 429 backoff), 12-hour WAT time format (`1:45pm wat`), and 5-minute reminder nudges (`src/agent/nudge.ts`).
-  - **Section 5 (`8273948`)**: Delivery message with Telegram confetti effect (`message_effect_id: 5046509860389126442`, retries once without effect if Telegram rejects), tap-to-copy `<code>` blocks, `🎁 your free link` for rewards, and preserved per-link `[✅ i've activated it]` buttons alongside `[need help]` and `[invite & earn 🎁]`.
-  - **Reconciler fix (`a7a8ae0`)**: Draft cleanup uses `olderThan.toISOString()::timestamptz` for date comparison in `deleteOldOrderDrafts`.
+- Prompts 0 to 8 from `docs/CLAUDE_CODE_PROMPTS.md`, Prompts A, B, C.
+- Prompt D, every section:
+  - 1 (`940a399`): one response per action, copy deck, no stubs, no fee percentages.
+  - 2 and 3 (`a77ba76`): draft cart (`order_drafts`), order number only on [continue], channel gate with fail open.
+  - 4 (`d0286b0`, fix `b137a10`): live countdown loop. The fix stores the Bachs session `expires_at` as `orders.expires_at`; `BACHS_SESSION_TTL_MINUTES` is the requested length and the fallback.
+  - 1/4 fix (`b9bdbc0`): after payment the payment card itself becomes "✅ paid, getting your links…" then "🎉 delivered". The old five line status message is no longer sent for new orders. Reconciler expiry uses the full expired text.
+  - 5 (`8273948`): delivery message with confetti. The plain resend happens only on a Telegram 400, so a timeout never sends links twice.
+  - 6 (`98af14f`): referral program. `src/services/referrals.ts`, migration `0008_referrals.sql` (applied to the Neon DB in `.env`), `/invite`, `invite` agent intent, help hub button, referral lines in `/stats` and the daily summary, `test/referrals.test.ts`.
+  - 7 (`58d4c0b`): `/myid`, admin id count logged at boot, buyer menu start, buy, history, invite, help.
+  - 8 (`51281aa`): PRD, ARCHITECTURE, README, RUNBOOK, `.env.example`, `render.yaml`.
+- Prompt 8 pass (`f6a194c`): launch checklist in RUNBOOK. The referral hook no longer awaits reward fulfilment inside the 3 slot fulfilment semaphore (that could deadlock).
 
-## What Remains for Claude Code (Prompt D Sections 6-8 + Prompt 8)
-1. **Prompt D Section 6 (Referral Program)**:
-   - Schema additions in `src/db/schema.ts`:
-     - `users.ref_code` (text, unique)
-     - `users.referred_by` (bigint referencing `users.telegramId`)
-     - `referrals` table: `id` (uuid pk), `referrer_id` (bigint), `referred_id` (bigint, unique), `qualified_at` (timestamptz)
-     - `orders.source` (text, e.g. `'direct' | 'referral_reward'`)
-   - Run `pnpm db:generate` (`pnpm exec drizzle-kit generate`) then `pnpm db:migrate`.
-   - Generate unique 4-letter consonant codes lazily (`bcdfghjkmnpqrstvwxz`).
-   - Link format: `https://t.me/geminiprosamkiel_bot?start=ref_abcd`.
-   - On first ever `/start ref_<code>`, attribute `users.referred_by` (ignore self, unknown code, or existing user).
-   - Qualify referral when referred user's first order with amount > 0 reaches `delivered` and is not refunded.
-   - For every 3 qualified referrals, issue 1 free link reward order (`source='referral_reward'`, amount 0, qty 1, own order_no) fulfilled through standard fulfilment, capped at `REFERRAL_MAX_REWARDS=3` per user.
-   - Implement `/invite` command and `[invite & earn 🎁]` button view with progress bar (`▰▰▱ 2 of 3 friends have bought`), share URL (`https://t.me/share/url?...`), and my orders button.
-2. **Prompt D Section 7 (Admin Helpers)**:
-   - Add unlisted `/myid` command for everyone that replies with their numeric Telegram ID.
-   - On boot, log how many admin IDs are configured in `ADMIN_TELEGRAM_IDS` and warn if 0.
-   - Update registered command lists: buyer scope `start, buy, history, invite, help`; admin scope as before.
-3. **Prompt D Section 8 (Docs & Acceptance)**:
-   - Update `docs/PRD.md`, `docs/ARCHITECTURE.md`, `README.md`, `RUNBOOK.md`, `.env.example`, `render.yaml`.
-4. **Prompt 8 from `docs/CLAUDE_CODE_PROMPTS.md`**:
-   - Final hardening & launch acceptance checklist pass.
+## Decisions worth knowing
+- `BOT_USERNAME` from Prompt D is the existing `TELEGRAM_BOT_USERNAME`; no new variable.
+- Reward orders: `status='paid'` at creation, `payment_reference = reward_<referrer>_<n>` (idempotent), amount 0. They are created only when sales are on and the reseller can cover them; otherwise the reconciler step `referral rewards` retries and admins get one alert per 30 minutes.
+- Only a user's first contact can be attributed: the users upsert middleware detects a fresh insert with `xmax = 0`.
+- Sales stats (`/stats` revenue, links) count `source='purchase'` only; rewards have their own line.
+
+## Still open
+- **Live acceptance not run.** The Prompt D acceptance needs two real Telegram accounts in the Bachs sandbox with `RESELLER_MOCK=true`: + five times then continue (one order number), countdown ticks, pay, confetti, `/invite` shows 0 of 3, second account joins through the referral link and buys, first account shows 1 of 3, non member stopped at continue. The same paths are covered by the automated tests.
+- **Bachs session cancel** on cancel or expire is not implemented. Nobody has confirmed from the Bachs docs that the API supports it.
+- **Confetti id** `5046509860389126442` is the commonly used 🎉 effect. The Bot API docs do not list effect ids, so confirm it in the first live delivery. If Telegram rejects it, the message still goes out without the effect.
+- The local environment sets `NODE_TLS_REJECT_UNAUTHORIZED=0` (warning printed by `pnpm db:migrate`). Make sure it is not set on Render.
+- Untracked and left alone: `PROMPT_D_polish_referral_gate.md`, `assets/proof/FHENIX SPEAKERS (5 of 109).jpg`.
 
 ## Rules (must follow)
 - Never commit `.env` or any secret. Before each commit run the secret scan: `git diff | grep -nE 'npg_[A-Za-z0-9]{6,}|rsp_live_[A-Za-z0-9]{20,}|sk_(live|sandbox)_[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9]{20,}|re_[A-Za-z0-9]{20,}'` must print nothing.
@@ -49,6 +39,5 @@ Read first: `CLAUDE.md` (rules), `docs/PRD.md`, `docs/ARCHITECTURE.md`, `README.
 - Run `pnpm typecheck && pnpm lint && pnpm test` before every commit.
 - No em dashes in user facing text. Lowercase, short bot copy. Never log secrets or activation links. Every external call has a timeout; reseller purchases use idempotency keys; money state changes are conditional UPDATEs.
 - Never kill processes by port: the user runs `pnpm dev` on port 3000.
-- Migrations: edit `src/db/schema.ts`, run `pnpm db:generate`, then `pnpm db:migrate` (applies to Neon so user's dev server keeps working).
+- Migrations: edit `src/db/schema.ts`, run `pnpm db:generate`, then `pnpm db:migrate` (applies to Neon so the user's dev server keeps working).
 - Link replacements are best effort, never promised.
-
