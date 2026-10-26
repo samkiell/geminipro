@@ -1,21 +1,21 @@
 import { z } from 'zod';
+import type { BuyOutcome } from '../bot/flows.js';
+import type { Keyboard } from '../bot/telegram.js';
+import { OWNER_LINKS, OWNER_TOPICS, ownerButtons, ownerInfo, type OwnerTopic } from '../knowledge/owner.js';
 
-// The agent proposes, code disposes (docs/ARCHITECTURE.md 5.2). The model only picks a tool and
+// The agent proposes, code disposes (docs/ARCHITECTURE.md 5.2). The model picks a tool and
 // arguments; code validates them, acts for the user in the update (never an id from the model),
-// and returns plain facts. No tool result ever contains an activation link or a checkout URL.
-
-export interface PayButton {
-  orderId: string;
-  url: string;
-  quantity: number;
-  totalNgn: number;
-}
+// renders anything visual itself, and returns plain facts. No tool result ever contains an
+// activation link or a checkout URL.
 
 export interface ToolContext {
   /** From the Telegram update. */
   telegramId: number;
-  /** Set by create_payment_link; the bot shows it as the pay now button. */
-  payButton?: PayButton;
+  username: string | undefined;
+  /** URL buttons (portfolio, support) to attach to the agent's reply. */
+  attachments: Keyboard;
+  /** The order card was shown this turn; a second create_payment_link only reports it. */
+  cardShown?: BuyOutcome;
 }
 
 export interface PriceInfo {
@@ -29,49 +29,19 @@ export interface PriceInfo {
 
 export const CHECKOUT_FEE_NOTE = 'a small payment fee is added on the checkout page, on top of this total';
 
-export interface OrderSummary {
-  /** First 8 characters of the order id: models copy short refs reliably, full UUIDs less so. */
-  orderRef: string;
-  quantity: number;
-  status: string;
-  /** Plain words for the buyer. */
-  meaning: string;
-  totalNgn: number;
-  createdAt: string;
-}
-
-export type PaymentLinkResult =
-  | {
-      ok: true;
-      orderId: string;
-      quantity: number;
-      totalNgn: number;
-      expiresInMinutes: number;
-      checkoutUrl: string;
-      feeNote?: string;
-    }
-  | {
-      ok: false;
-      error: 'pending_order_exists';
-      orderId: string;
-      quantity: number;
-      totalNgn: number;
-      expiresInMinutes: number;
-      checkoutUrl: string | undefined;
-    }
-  | { ok: false; error: 'not_enough_stock' | 'invalid_quantity'; maxQuantity: number }
-  | { ok: false; error: 'sales_paused' | 'sales_closed' | 'payment_link_failed' };
-
-/** What the tools can do. Real implementation in services.ts; the eval script uses a fake. */
-export interface BuyerServices {
+/** What the tools can do. Real implementation in actions.ts; the eval script uses a fake. */
+export interface AgentActions {
   getPrice(quantity: number): PriceInfo;
   checkAvailability(): Promise<{ canSell: boolean; maxQuantity: number; reason?: string }>;
-  createPaymentLink(telegramId: number, quantity: number): Promise<PaymentLinkResult>;
-  getMyOrders(telegramId: number): Promise<OrderSummary[]>;
-  /** orderRef from getMyOrders; omitted means the latest order with delivered links. */
-  resendMyLinks(telegramId: number, orderRef?: string): Promise<{ sent: number } | { error: string }>;
-  cancelPendingOrder(telegramId: number): Promise<{ cancelled: boolean }>;
-  escalate(telegramId: number, reason: string): Promise<{ supportWhatsapp: string }>;
+  /** Shows the order summary card with the pay button. */
+  buy(telegramId: number, quantity: number): Promise<BuyOutcome>;
+  showHistory(telegramId: number): Promise<void>;
+  showOrder(telegramId: number, orderNo: string): Promise<boolean>;
+  cancelPending(telegramId: number): Promise<boolean>;
+  escalate(telegramId: number, username: string | undefined, reason: string): Promise<void>;
+  saveLead(telegramId: number, username: string | undefined, summary: string): Promise<'saved' | 'limited'>;
+  supportLocal: string;
+  supportUrl: string;
 }
 
 export interface ToolDefinition {
@@ -84,72 +54,85 @@ export interface ToolSet {
   execute(name: string, rawArguments: string | undefined, ctx: ToolContext): Promise<unknown>;
 }
 
-export function createTools(services: BuyerServices, { maxQtyPerOrder }: { maxQtyPerOrder: number }): ToolSet {
+function attach(ctx: ToolContext, row: Keyboard[number]): void {
+  const urls = new Set(ctx.attachments.flat().map((b) => ('url' in b ? b.url : b.data)));
+  const fresh = row.filter((b) => !urls.has('url' in b ? b.url : b.data));
+  if (fresh.length > 0) ctx.attachments.push(fresh);
+}
+
+export function createTools(actions: AgentActions, { maxQtyPerOrder }: { maxQtyPerOrder: number }): ToolSet {
   const quantity = z.coerce.number().int();
 
   const tools = {
     get_price: {
-      description: 'Exact price for a number of links: base, payment fee if any, and total in naira.',
-      args: z.object({ quantity: quantity.default(1).describe('how many links, default 1') }),
-      run: async ({ quantity: q }: { quantity: number }) =>
-        services.getPrice(Math.min(Math.max(q, 1), maxQtyPerOrder)),
+      description: 'Price for a number of links.',
+      args: z.object({ quantity: quantity.default(1) }),
+      run: async ({ quantity: q }: { quantity: number }) => actions.getPrice(Math.min(Math.max(q, 1), maxQtyPerOrder)),
     },
     check_availability: {
-      description: 'Whether links can be sold right now, and the most that can be bought in one order.',
+      description: 'Whether links can be sold now, and the most per order.',
       args: z.object({}),
-      run: async () => services.checkAvailability(),
+      run: async () => actions.checkAvailability(),
     },
     create_payment_link: {
-      description:
-        'Create an order and its payment link for this user. The pay now button is attached to your reply automatically.',
-      args: z.object({ quantity: quantity.describe(`how many links, 1 to ${maxQtyPerOrder}`) }),
+      description: 'Show this user the order card with quantity, total and pay button.',
+      args: z.object({ quantity: quantity.default(1) }),
       run: async ({ quantity: q }: { quantity: number }, ctx: ToolContext) => {
-        const result = await services.createPaymentLink(ctx.telegramId, q);
-        if (result.ok) {
-          ctx.payButton = { orderId: result.orderId, url: result.checkoutUrl, quantity: result.quantity, totalNgn: result.totalNgn };
-          return {
-            orderId: result.orderId,
-            totalNgn: result.totalNgn,
-            expiresInMinutes: result.expiresInMinutes,
-            ...(result.feeNote && { feeNote: result.feeNote }),
-          };
+        if (ctx.cardShown) return { shown: true, note: 'the order card is already in the chat' };
+        const outcome = await actions.buy(ctx.telegramId, q);
+        if (!outcome.ok) {
+          return { shown: false, error: outcome.reason, note: 'the user was already told in the chat; reply in one short line' };
         }
-        if (result.error === 'pending_order_exists') {
-          if (result.checkoutUrl) {
-            ctx.payButton = { orderId: result.orderId, url: result.checkoutUrl, quantity: result.quantity, totalNgn: result.totalNgn };
-          }
-          const { checkoutUrl: _url, ok: _ok, ...facts } = result;
-          return {
-            ...facts,
-            note: 'this user already has an unpaid order. its pay now button is attached. to change the quantity, cancel it first with cancel_pending_order.',
-          };
-        }
-        const { ok: _ok, ...error } = result;
-        return error;
+        ctx.cardShown = outcome;
+        const { ok: _ok, maxQuantity: _max, ...facts } = outcome;
+        const price = actions.getPrice(outcome.quantity);
+        return { shown: true, ...facts, ...(price.feeNote && { feeNote: price.feeNote }) };
       },
     },
-    get_my_orders: {
-      description: "This user's last 5 orders with their status. Never contains links.",
+    show_history: {
+      description: "Show this user's orders, where they can open an order and get its links again.",
       args: z.object({}),
-      run: async (_args: object, ctx: ToolContext) => ({ orders: await services.getMyOrders(ctx.telegramId) }),
+      run: async (_args: object, ctx: ToolContext) => {
+        await actions.showHistory(ctx.telegramId);
+        return { shown: true };
+      },
     },
-    resend_my_links: {
-      description:
-        "Send the links of this user's delivered order to the chat again (code sends them, not you). Leave orderRef out for their latest delivered order.",
-      args: z.object({ orderRef: z.string().optional().describe('orderRef from get_my_orders, optional') }),
-      run: async ({ orderRef }: { orderRef?: string | undefined }, ctx: ToolContext) =>
-        services.resendMyLinks(ctx.telegramId, orderRef),
+    show_order: {
+      description: 'Show one of this user\'s orders by its number, like GP-1042.',
+      args: z.object({ orderNo: z.string() }),
+      run: async ({ orderNo }: { orderNo: string }, ctx: ToolContext) =>
+        (await actions.showOrder(ctx.telegramId, orderNo)) ? { shown: true } : { shown: false, error: 'order_not_found' },
     },
     cancel_pending_order: {
-      description: "Cancel this user's unpaid order, if they have one.",
+      description: "Cancel this user's unpaid order.",
       args: z.object({}),
-      run: async (_args: object, ctx: ToolContext) => services.cancelPendingOrder(ctx.telegramId),
+      run: async (_args: object, ctx: ToolContext) => ({ cancelled: await actions.cancelPending(ctx.telegramId) }),
     },
     escalate_to_support: {
-      description:
-        'Alert the owner and get the whatsapp support number: dead links, refunds, discounts, complaints, anger, or anything you cannot answer.',
-      args: z.object({ reason: z.string().describe('one short sentence on what the user needs') }),
-      run: async ({ reason }: { reason: string }, ctx: ToolContext) => services.escalate(ctx.telegramId, reason.slice(0, 500)),
+      description: 'Alert the owner and offer whatsapp support: dead links, refunds, discounts, complaints, or anything you cannot answer.',
+      args: z.object({ reason: z.string() }),
+      run: async ({ reason }: { reason: string }, ctx: ToolContext) => {
+        await actions.escalate(ctx.telegramId, ctx.username, reason.slice(0, 500));
+        attach(ctx, [{ text: 'whatsapp support', url: actions.supportUrl }]);
+        return { supportWhatsapp: actions.supportLocal, note: 'a whatsapp button is attached to your reply' };
+      },
+    },
+    get_owner_info: {
+      description: 'Facts about samkiel (who made you) and how the shop works.',
+      args: z.object({ topic: z.enum(OWNER_TOPICS as [OwnerTopic, ...OwnerTopic[]]) }),
+      run: async ({ topic }: { topic: OwnerTopic }, ctx: ToolContext) => {
+        const buttons = ownerButtons(topic).map((name) => ({ text: name, url: OWNER_LINKS[name] }));
+        if (buttons.length > 0) attach(ctx, buttons);
+        return { ok: true, text: ownerInfo(topic), ...(buttons.length > 0 && { note: 'link buttons are attached to your reply' }) };
+      },
+    },
+    save_lead: {
+      description: 'Save a request to have samkiel build something (app, website, bot) so he can follow up.',
+      args: z.object({ summary: z.string() }),
+      run: async ({ summary }: { summary: string }, ctx: ToolContext) => {
+        attach(ctx, [{ text: 'portfolio', url: OWNER_LINKS.portfolio }]);
+        return { saved: (await actions.saveLead(ctx.telegramId, ctx.username, summary)) === 'saved' };
+      },
     },
   } as const;
 
