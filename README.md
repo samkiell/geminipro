@@ -41,6 +41,8 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 
    Check it: `curl http://localhost:3000/health` returns `{"ok":true,"db":"ok"}`. It returns 503 if the database is unreachable.
 
+   In development the bot reads Telegram updates by long polling, so you can chat with it without a public URL. Polling removes any webhook set on the same bot, so after testing locally run `pnpm webhook:set` again before relying on the deployed service.
+
 ## Scripts
 
 | Script | What it does |
@@ -55,6 +57,7 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 | `pnpm db:migrate` | apply pending migrations |
 | `pnpm mock:reseller` | run the mock reseller API on port 4010 (`pnpm dev` already starts it when `RESELLER_MOCK=true`) |
 | `pnpm order:test [qty] [telegramId]` | sandbox only: create an order and print its Bachs checkout link; `--cancel` cancels it |
+| `pnpm eval:agent` | run scripted buyer conversations against the real Groq models and check tool use and reply rules |
 
 ## Test mode and live mode
 
