@@ -20,5 +20,5 @@
     "outDir": "dist",
     "noEmit": true
   },
-  "include": ["src", "test", "drizzle.config.ts", "vitest.config.ts"]
+  "include": ["src", "test", "scripts", "drizzle.config.ts", "vitest.config.ts"]
 }
