@@ -1,6 +1,6 @@
 import { and, eq, isNotNull } from 'drizzle-orm';
 import type { TelegramPort } from '../bot/telegram.js';
-import { paymentCard, type UiFacts } from '../bot/views.js';
+import { EXPIRED_TEXT, paymentCard, type UiFacts } from '../bot/views.js';
 import type { Db } from '../db/client.js';
 import { orders } from '../db/schema.js';
 import type { Logger } from '../util/logger.js';
@@ -67,7 +67,7 @@ export function createCountdownRunner(deps: CountdownDeps): CountdownRunner {
         if (remainingMs <= 0) {
           try {
             await port.edit(order.telegramId, order.summaryMessageId, {
-              text: 'expired ⌛ send /buy to start again. if you already paid, wait a minute, your link will still arrive.',
+              text: EXPIRED_TEXT,
               keyboard: undefined,
             });
             await setOrderMessages(db, order.id, { summaryMessageId: null, payMessageId: null });

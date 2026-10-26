@@ -98,9 +98,13 @@ describe('summary card', () => {
     expect(card.keyboard?.[1]?.[0]?.text).toBe('pay \u00b7 \u20a63,572');
   });
 
-  it('collapses to one line with no buttons once its job is done', () => {
-    expect(summaryResolved(order, 'paid')).toEqual({ text: 'paid \u2705 order GP-1042' });
-    expect(summaryResolved(order, 'expired').text).toBe('expired \u231b send /buy to start again');
+  it('becomes paid, then delivered, in the same message with no buttons', () => {
+    expect(summaryResolved(order, 'getting')).toEqual({ text: 'order GP-1042 \u00b7 2 links\n\u2705 paid, getting your links\u2026' });
+    expect(summaryResolved(order, 'delivered')).toEqual({ text: 'order GP-1042 \u00b7 2 links\n\ud83c\udf89 delivered' });
+    expect(summaryResolved({ ...order, quantity: 1 }, 'getting').text).toBe('order GP-1042 \u00b7 1 link\n\u2705 paid, getting your link\u2026');
+    expect(summaryResolved(order, 'expired').text).toBe(
+      'expired \u231b send /buy to start again. if you already paid, wait a minute, your link will still arrive.',
+    );
     expect(summaryResolved(order, 'cancelled').text).toBe('cancelled');
     expect(summaryResolved(order, 'held').keyboard).toBeUndefined();
   });

@@ -29,7 +29,7 @@ import {
 } from '../services/orders.js';
 import type { PaymentProvider } from '../services/payments.js';
 import { priceFor, type PricingConfig } from '../services/pricing.js';
-import { ensureRefCode, isReward, referralLink, referralProgress, type ReferralConfig } from '../services/referrals.js';
+import { ensureRefCode, referralLink, referralProgress, type ReferralConfig } from '../services/referrals.js';
 import type { ResellerClient } from '../services/reseller.js';
 import { getOfferText, isPaused } from '../services/settings.js';
 import type { Logger } from '../util/logger.js';
@@ -39,6 +39,7 @@ import {
   activationConfirm,
   activationHelpReply,
   cb,
+  FINAL_OUTCOMES,
   draftCard,
   gateCard,
   helpHub,
@@ -146,14 +147,17 @@ export function createFlows(deps: FlowDeps) {
       case 'created':
       case 'awaiting_payment':
         return undefined;
-      case 'expired':
-        return 'expired';
-      case 'cancelled':
-        return 'cancelled';
+      case 'paid':
+      case 'fulfilling':
+      case 'partial':
+        return 'getting';
       case 'needs_attention':
-        return order.paidAt ? 'paid' : 'held';
-      default:
-        return 'paid';
+        return order.paidAt ? 'late' : 'held';
+      case 'delivered':
+      case 'expired':
+      case 'cancelled':
+      case 'refunded':
+        return order.status;
     }
   }
 
@@ -162,25 +166,27 @@ export function createFlows(deps: FlowDeps) {
     if (!order) return;
     const chat = order.telegramId;
 
-    // The card's job is done: collapse it to one line, once (claim first, edit second).
+    // The payment card follows the order in place: "✅ paid, getting your links…", then
+    // "🎉 delivered". A final state is applied once (claim first, edit second).
     const outcome = summaryOutcome(order);
     if (outcome && order.summaryMessageId) {
-      const [claimed] = await db
-        .update(orders)
-        .set({ summaryMessageId: null, payMessageId: null })
-        .where(and(eq(orders.id, orderId), eq(orders.summaryMessageId, order.summaryMessageId)))
-        .returning({ id: orders.id });
-      if (claimed) await port.edit(chat, order.summaryMessageId, summaryResolved(order, outcome));
+      if (FINAL_OUTCOMES.includes(outcome)) {
+        const [claimed] = await db
+          .update(orders)
+          .set({ summaryMessageId: null, payMessageId: null })
+          .where(and(eq(orders.id, orderId), eq(orders.summaryMessageId, order.summaryMessageId)))
+          .returning({ id: orders.id });
+        if (claimed) await port.edit(chat, order.summaryMessageId, summaryResolved(order, outcome));
+      } else {
+        await port.edit(chat, order.summaryMessageId, summaryResolved(order, outcome));
+      }
     }
 
-    const status = renderStatus(order, facts);
+    // Older orders that still have a separate status message keep it up to date.
     if (order.statusMessageId) {
+      const status = renderStatus(order, facts);
       const result = await port.edit(chat, order.statusMessageId, status);
       if (result === 'gone') await sendStatus(order, status);
-    } else if (order.paidAt && !isReward(order)) {
-      // Paid without a status message (say, an order replaced by the stepper and paid later).
-      // Free referral links have no checkout, so their delivery message is all the buyer needs.
-      await sendStatus(order, status);
     }
   }
 

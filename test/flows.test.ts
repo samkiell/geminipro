@@ -186,11 +186,14 @@ describe('buying and draft cart', () => {
     await f.continueDraft(BUYER, msgId);
     const paidOrder = await latestOrder();
 
+    const sentBefore = tg.sent.length;
     await markPaid(testDb.db, paidOrder?.id ?? '');
     f.orderChanged(paidOrder?.id ?? '');
     await f.whenIdle();
-    expect(tg.get(msgId)?.text).toBe(`paid ✅ order ${paidOrder?.orderNo}`);
+    expect(tg.get(msgId)?.text).toBe(`order ${paidOrder?.orderNo} · 1 link\n✅ paid, getting your link…`);
     expect(tg.get(msgId)?.keyboard).toBeUndefined();
+    // The card is the status: no separate checklist or receipt message.
+    expect(tg.sent).toHaveLength(sentBefore);
 
     // Expiry test
     await f.startBuy(BUYER, 1);
@@ -200,7 +203,7 @@ describe('buying and draft cart', () => {
     await testDb.db.update(orders).set({ expiresAt: new Date(0) }).where(eq(orders.id, unpaid?.id ?? ''));
     for (const o of await expireUnpaidOrders(testDb.db)) f.orderChanged(o.id);
     await f.whenIdle();
-    expect(tg.get(unpaidMsgId)?.text).toBe('expired ⌛ send /buy to start again');
+    expect(tg.get(unpaidMsgId)?.text).toBe('expired ⌛ send /buy to start again. if you already paid, wait a minute, your link will still arrive.');
     expect(tg.get(unpaidMsgId)?.keyboard).toBeUndefined();
   });
 
@@ -461,15 +464,10 @@ describe('acceptance: buy 3, pay, receive tap-to-copy links, find them in histor
       'invite & earn 🎁',
     ]);
 
-    // the card lost its buttons, the status message became the receipt
-    expect(tg.get(cardId)).toMatchObject({ text: `paid ✅ order ${order?.orderNo}` });
+    // the payment card itself became "delivered", without buttons; nothing else was sent but the links
+    expect(tg.get(cardId)).toMatchObject({ text: `order ${order?.orderNo} · 3 links\n🎉 delivered` });
     expect(tg.get(cardId)?.keyboard).toBeUndefined();
-    const deliveredOrder = await latestOrder();
-    const statusId = deliveredOrder?.statusMessageId;
-    if (statusId) {
-      expect(tg.get(statusId)?.text).toContain('✅ delivered');
-      expect(tg.get(statusId)?.text).toContain('receipt: 3 links · ₦10,500 paid + fee');
-    }
+    expect(tg.sent.filter((m) => m.id > cardId).map((m) => m.text.split('\n')[0])).toEqual([`🎉 order ${order?.orderNo} delivered`]);
     expect((await getOrder(testDb.db, order?.id ?? '')).status).toBe('delivered');
 
     // history shows it; opening it offers the links again

@@ -217,15 +217,28 @@ export function summaryCard({ order, maxQuantity, offerText, facts }: SummaryInp
   };
 }
 
-export type SummaryOutcome = 'paid' | 'held' | 'expired' | 'cancelled';
+export type SummaryOutcome = 'getting' | 'delivered' | 'late' | 'held' | 'expired' | 'cancelled' | 'refunded';
 
-/** What the summary card collapses to once its job is done. No buttons. */
-export function summaryResolved(order: Pick<Order, 'orderNo'>, outcome: SummaryOutcome): OutMessage {
+/** Outcomes after which the card never changes again. */
+export const FINAL_OUTCOMES: readonly SummaryOutcome[] = ['delivered', 'expired', 'cancelled', 'refunded'];
+
+export const EXPIRED_TEXT = 'expired ⌛ send /buy to start again. if you already paid, wait a minute, your link will still arrive.';
+
+/**
+ * What the payment card becomes once paid or closed, with no buttons. The same message goes
+ * "✅ paid, getting your links…" then "🎉 delivered": no separate checklist or receipt.
+ */
+export function summaryResolved(order: Pick<Order, 'orderNo' | 'quantity'>, outcome: SummaryOutcome): OutMessage {
+  const q = order.quantity;
+  const head = `order ${order.orderNo} · ${q} ${plural(q, 'link', 'links')}`;
   const text = {
-    paid: `paid ✅ order ${order.orderNo}`,
+    getting: `${head}\n✅ paid, getting your ${plural(q, 'link', 'links')}…`,
+    delivered: `${head}\n🎉 delivered`,
+    late: `${head}\n✅ paid, being sorted. we'll send your ${plural(q, 'link', 'links')} here.`,
     held: `payment received, being checked · order ${order.orderNo}`,
-    expired: `expired ⌛ send /buy to start again`,
-    cancelled: `cancelled`,
+    expired: EXPIRED_TEXT,
+    cancelled: 'cancelled',
+    refunded: `${head}\nrefunded.`,
   }[outcome];
   return { text };
 }
