@@ -348,7 +348,7 @@ Triggers: low balance, out of stock, `needs_attention` order, partial order, inv
 
 ## 10. Deployment
 
-- **Render** web service (free), Node 22. Build: `corepack enable && pnpm install --frozen-lockfile && pnpm build`. Start: `pnpm start` (runs migrations, then the server).
+- **Render** web service (free), Node 22. Build: `corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm build`. Start: `pnpm start` (`node dist/db/migrate.js && node dist/index.js`: pending migrations, then the server). With `RESELLER_MOCK=true` (sandbox keys only) the app runs the mock reseller in process on 127.0.0.1, so a sandbox deploy works end to end.
 - **Health:** `GET /health` returns 200 with db check. Uptime monitor pings every 10 minutes (free instances sleep after 15 idle minutes).
 - **Telegram:** `pnpm webhook:set` calls `setWebhook` to `https://<service>.onrender.com/telegram/webhook` with `secret_token` (the route rejects requests without the matching header) and registers the command menus: four buyer commands by default, plus the admin list in each admin's chat (`BotCommandScopeChat`).
 - **Bachs:** webhook endpoint `https://<service>.onrender.com/bachs/webhook` for `checkout.completed`, `collection.succeeded`, `checkout.expired`, set in the developer portal (sandbox and live are separate, each with its own signing secret).

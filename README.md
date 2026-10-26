@@ -49,13 +49,13 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 |---|---|
 | `pnpm dev` | run `src/index.ts` with reload |
 | `pnpm build` | compile to `dist/` |
-| `pnpm start` | run the compiled server |
+| `pnpm start` | apply pending migrations, then run the compiled server (what Render runs) |
 | `pnpm typecheck` | type check `src` and `test` |
 | `pnpm lint` | ESLint |
 | `pnpm test` | vitest |
 | `pnpm db:generate` | generate a new SQL migration after editing `src/db/schema.ts` |
 | `pnpm db:migrate` | apply pending migrations |
-| `pnpm mock:reseller` | run the mock reseller API on port 4010 (`pnpm dev` already starts it when `RESELLER_MOCK=true`) |
+| `pnpm mock:reseller` | run the mock reseller API on port 4010 (the app already runs it itself when `RESELLER_MOCK=true`) |
 | `pnpm order:test [qty] [telegramId]` | sandbox only: create an order and print its Bachs checkout link; `--cancel` cancels it |
 | `pnpm eval:agent [names]` | run scripted buyer conversations against the real Groq models and check tool use and reply rules |
 | `pnpm webhook:set` | point Telegram at `PUBLIC_URL`, register the command menus, print the Bachs webhook URL |
@@ -73,6 +73,58 @@ Bachs sandbox keys (`sk_sandbox_`) must run with `RESELLER_MOCK=true`, and live 
 An order is only marked paid after the signature checks out and Bachs itself reports the checkout as completed, in NGN, for at least the order amount. Anything else holds the order as `needs_attention` and alerts the owner.
 
 The mock reseller keeps everything in memory. While it runs, `POST http://127.0.0.1:4010/__mock/control` changes its behaviour, for example `{"set":{"stock":0}}`, `{"faults":["timeout"]}` or `{"failNthItem":{"n":2}}`. `GET /__mock/state` shows the current state.
+
+## Deploy to Render
+
+The service is a free Render web service described by `render.yaml`: Node 22, build `corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm build`, start `pnpm start`, health check `/health`. `pnpm start` applies pending migrations, then boots, so a fresh clone with only env vars set deploys on its own. A fresh database gets its tables on first boot, and later boots skip migrations that are already applied.
+
+### 1. Neon
+
+1. Use your Neon project (or a separate branch for production) and copy the **pooled** connection string: `-pooler` in the host, `?sslmode=require` at the end. That is `DATABASE_URL`.
+2. Nothing else to do: the first deploy creates the tables.
+
+### 2. Render
+
+1. Push the repo to GitHub. In Render: **New > Blueprint**, pick the repo. Render reads `render.yaml`.
+2. Render asks for every variable marked `sync: false` (table below). The rest already have values in `render.yaml`.
+3. Deploy. When it is live, open `https://<service>.onrender.com/health`: it should say `{"ok":true,"db":"ok"}`.
+4. Put that URL in `PUBLIC_URL` on Render if you did not already, and redeploy.
+5. On your machine, with the same `PUBLIC_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` and `ADMIN_TELEGRAM_IDS` in `.env`, run `pnpm webhook:set`. It points Telegram at `/telegram/webhook`, registers the command menus and prints the Bachs webhook URL.
+6. Add that Bachs webhook endpoint in the Bachs developer portal, put its signing secret in `BACHS_WEBHOOK_SECRET` on Render, and redeploy.
+7. Stop `pnpm dev` on your machine while the deployed bot is live: local polling removes the webhook. If it happens, run `pnpm webhook:set` again. (A second bot from BotFather for local testing avoids this.)
+
+| Variable (set in Render) | What to put |
+|---|---|
+| `PUBLIC_URL` | `https://<service>.onrender.com` |
+| `TELEGRAM_BOT_TOKEN` | from BotFather |
+| `TELEGRAM_WEBHOOK_SECRET` | a long random string, for example `openssl rand -hex 32` |
+| `ADMIN_TELEGRAM_IDS` | your Telegram user id, comma separated for more admins |
+| `BACHS_SECRET_KEY` | `sk_sandbox_...` to start, `sk_live_...` at launch |
+| `BACHS_WEBHOOK_SECRET` | the signing secret of the Bachs webhook endpoint for that environment |
+| `BACHS_BASE_URL` | leave empty (the key picks sandbox or live) |
+| `RESELLER_MOCK` | `true` with a sandbox key, `false` with a live key |
+| `RESELLER_API_KEY` | from the reseller bot (any value while `RESELLER_MOCK=true`) |
+| `GROQ_API_KEY` | from the Groq console |
+| `DATABASE_URL` | the Neon pooled connection string |
+| `ALERT_EMAIL`, `ALERT_EMAIL_FROM`, `RESEND_API_KEY` | where alerts go and who sends them (Resend, verified domain) |
+| `NTFY_TOPIC` | a long, hard to guess topic; subscribe to it in the ntfy app |
+| `SALES_CUTOFF` | optional, leave empty |
+
+### 3. Keep it awake (UptimeRobot)
+
+Free Render services sleep after 15 idle minutes and take about a minute to wake (Telegram and Bachs retry meanwhile, and the reconciler catches up). In [UptimeRobot](https://uptimerobot.com) add an **HTTP(s)** monitor on `https://<service>.onrender.com/health` every **10 minutes**. It keeps the service awake and alerts you if `/health` fails (it returns 503 when the database is unreachable). One always-on free service fits in Render's monthly free hours.
+
+### 4. Sandbox first, then live
+
+With `sk_sandbox_` and `RESELLER_MOCK=true` the deployed bot runs end to end with no real money: sandbox payments, links from the built in mock reseller (it runs inside the app on 127.0.0.1). To go live:
+
+1. In Bachs, create the **live** webhook endpoint (same URL, live mode) and copy its signing secret. Check the live account's fee setting (`customer_pays` with `GROSS_UP=false`).
+2. On Render set `BACHS_SECRET_KEY=sk_live_...`, `BACHS_WEBHOOK_SECRET=<live signing secret>`, `RESELLER_MOCK=false` and the real `RESELLER_API_KEY`, all in one go (the app refuses to boot with a mismatched pair), then redeploy.
+3. Send `/balance` to the bot to confirm the reseller key and balance, then make one small real purchase.
+
+### 5. Reseller balance
+
+Every link is bought from the reseller at about $1.20. Top up on the reseller's bot. `/balance` shows the USD balance, how many links it covers, the stock, links promised to open orders and how many you can still sell. You get an alert when fewer than `LOW_BALANCE_ORDERS` links are left, and paid orders that waited on the balance complete by themselves within 10 minutes of a top up.
 
 ## What buyers see
 
