@@ -1,0 +1,2 @@
+ALTER TABLE "order_items" ADD COLUMN "delivered_at" timestamp with time zone;--> statement-breakpoint
+CREATE UNIQUE INDEX "orders_one_pending_per_user_idx" ON "orders" USING btree ("telegram_id") WHERE status in ('created', 'awaiting_payment');
