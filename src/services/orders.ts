@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { orderItems, orders, users, type Order, type OrderStatus } from '../db/schema.js';
-import type { BachsClient } from './bachs.js';
+import type { PaymentProvider } from './payments.js';
 import { priceFor, type Price, type PricingConfig } from './pricing.js';
 import type { ResellerClient } from './reseller.js';
 import { isPaused } from './settings.js';
@@ -18,7 +18,7 @@ export const PAYMENT_WINDOW_MINUTES = 15;
  */
 export const PAYABLE: readonly OrderStatus[] = ['created', 'awaiting_payment', 'expired', 'cancelled'];
 
-const UNPAID_OPEN: OrderStatus[] = ['created', 'awaiting_payment'];
+export const UNPAID_OPEN: readonly OrderStatus[] = ['created', 'awaiting_payment'];
 
 export function paymentReference(orderId: string): string {
   return `gp_${orderId}`;
@@ -29,7 +29,7 @@ export function paymentReference(orderId: string): string {
 export interface CreateOrderDeps {
   db: Db;
   reseller: Pick<ResellerClient, 'getAvailability'>;
-  bachs: Pick<BachsClient, 'createCheckout'>;
+  payments: Pick<PaymentProvider, 'createCheckout'>;
   pricing: PricingConfig;
   maxQtyPerOrder: number;
   salesCutoff: Date | undefined;
@@ -101,7 +101,7 @@ export async function createOrder(
   }
 
   try {
-    const checkout = await deps.bachs.createCheckout({
+    const checkout = await deps.payments.createCheckout({
       orderId: id,
       reference: paymentReference(id),
       amountNgn: price.totalNgn,
@@ -266,6 +266,86 @@ export async function finishFulfilment(
       ...(status === 'delivered' && { deliveredAt: sql`now()` }),
     })
     .where(and(eq(orders.id, orderId), eq(orders.status, 'fulfilling')))
+    .returning();
+  return order;
+}
+
+// ---------------------------------------------------------------- buyer views (ownership checked)
+
+/** An order of this buyer, or nothing. Ids from buttons are never trusted on their own. */
+export async function findOwnOrder(db: Db, telegramId: number, orderId: string): Promise<Order | undefined> {
+  if (!/^[0-9a-f-]{36}$/i.test(orderId)) return undefined;
+  const [order] = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.id, orderId), eq(orders.telegramId, telegramId)));
+  return order;
+}
+
+export async function findOwnOrderByNo(db: Db, telegramId: number, orderNo: string): Promise<Order | undefined> {
+  const normalised = orderNo.trim().toUpperCase().replace(/^GP-?/, 'GP-');
+  const [order] = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.orderNo, normalised), eq(orders.telegramId, telegramId)));
+  return order;
+}
+
+export const HISTORY_PAGE_SIZE = 5;
+
+/** Paid orders and the current unpaid one, newest first. Abandoned ones are left out. */
+export async function historyPage(
+  db: Db,
+  telegramId: number,
+  page: number,
+): Promise<{ orders: Order[]; hasNext: boolean }> {
+  const rows = await db
+    .select()
+    .from(orders)
+    .where(
+      and(
+        eq(orders.telegramId, telegramId),
+        or(isNotNull(orders.paidAt), inArray(orders.status, UNPAID_OPEN)),
+      ),
+    )
+    .orderBy(sql`${orders.createdAt} desc`)
+    .limit(HISTORY_PAGE_SIZE + 1)
+    .offset((Math.max(page, 1) - 1) * HISTORY_PAGE_SIZE);
+  return { orders: rows.slice(0, HISTORY_PAGE_SIZE), hasNext: rows.length > HISTORY_PAGE_SIZE };
+}
+
+export async function countPastOrders(db: Db, telegramId: number): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(orders)
+    .where(and(eq(orders.telegramId, telegramId), isNotNull(orders.paidAt)));
+  return row?.n ?? 0;
+}
+
+/** Links already sent to the buyer, in order. Sensitive: never log them. */
+export async function deliveredLinks(db: Db, orderId: string): Promise<{ number: number; link: string }[]> {
+  const rows = await db
+    .select({ idx: orderItems.idx, link: orderItems.activationLink })
+    .from(orderItems)
+    .where(and(eq(orderItems.orderId, orderId), isNotNull(orderItems.deliveredAt), isNotNull(orderItems.activationLink)))
+    .orderBy(orderItems.idx);
+  return rows.map((r) => ({ number: r.idx + 1, link: r.link as string }));
+}
+
+export async function setOrderMessages(
+  db: Db,
+  orderId: string,
+  ids: Partial<Pick<Order, 'summaryMessageId' | 'payMessageId' | 'statusMessageId'>>,
+): Promise<void> {
+  await db.update(orders).set(ids).where(eq(orders.id, orderId));
+}
+
+/** One unpaid order of this buyer -> cancelled. A payment that still lands is honoured. */
+export async function cancelOwnOrder(db: Db, telegramId: number, orderId: string): Promise<Order | undefined> {
+  const [order] = await db
+    .update(orders)
+    .set({ status: 'cancelled' })
+    .where(and(eq(orders.id, orderId), eq(orders.telegramId, telegramId), inArray(orders.status, UNPAID_OPEN)))
     .returning();
   return order;
 }

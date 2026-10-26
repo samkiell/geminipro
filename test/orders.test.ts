@@ -49,8 +49,8 @@ function deps(overrides: Partial<CreateOrderDeps> = {}): CreateOrderDeps {
         });
       },
     },
-    bachs: {
-      createCheckout: async (input) => {
+    payments: {
+      createCheckout: async (input: CreateCheckoutInput) => {
         checkouts.push(input);
         await new Promise((resolve) => setTimeout(resolve, 5));
         if (checkoutFails) throw new Error('bachs down');

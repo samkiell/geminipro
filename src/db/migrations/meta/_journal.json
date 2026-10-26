@@ -29,6 +29,13 @@
       "when": 1792991526674,
       "tag": "0003_fulfilment",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792995483421,
+      "tag": "0004_buyer_ux",
+      "breakpoints": true
     }
   ]
 }

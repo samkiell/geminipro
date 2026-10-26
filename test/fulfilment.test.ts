@@ -1,7 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { orderItems, orders, users } from '../src/db/schema.js';
-import { DeliveryError, type SendMessage } from '../src/services/delivery.js';
 import { fulfil, itemIdempotencyKey, type FulfilmentDeps } from '../src/services/fulfilment.js';
 import type { Alert } from '../src/services/notifier.js';
 import { ResellerClient } from '../src/services/reseller.js';
@@ -9,6 +8,7 @@ import { isPaused } from '../src/services/settings.js';
 import { createLogger, type Logger } from '../src/util/logger.js';
 import { createTestDb } from './helpers/db.js';
 import { getItems, getOrder, insertOrder } from './helpers/orders.js';
+import { facts, fakePort, type FakePort } from './helpers/telegram.js';
 import { startMockReseller, type MockReseller } from './mocks/reseller-server.js';
 
 const API_KEY = 'mock-key';
@@ -16,9 +16,9 @@ const LINK = /https:\/\/mock-reseller\.local\/activate\/[0-9a-f]+/g;
 
 let testDb: Awaited<ReturnType<typeof createTestDb>>;
 let mock: MockReseller;
-let sent: { chatId: number; text: string }[];
+let tg: FakePort;
 let alerts: Alert[];
-let sendImpl: SendMessage;
+let changed: string[];
 
 beforeAll(async () => {
   testDb = await createTestDb();
@@ -30,11 +30,9 @@ afterAll(async () => {
 beforeEach(async () => {
   await testDb.reset();
   mock = await startMockReseller({ apiKey: API_KEY });
-  sent = [];
+  tg = fakePort();
   alerts = [];
-  sendImpl = async (chatId, text) => {
-    sent.push({ chatId, text });
-  };
+  changed = [];
 });
 afterEach(async () => {
   await mock.close();
@@ -56,18 +54,20 @@ function deps(overrides: { apiKey?: string; logger?: Logger } = {}): FulfilmentD
       pendingTimeoutMs: 500,
     }),
     productId: 1,
-    send: (chatId, text) => sendImpl(chatId, text),
+    port: tg.port,
+    facts,
     notify: (alert) => alerts.push(alert),
     logger,
-    supportWhatsapp: '08087357158',
+    onChange: (orderId) => changed.push(orderId),
     itemRetryDelaysMs: [1, 1],
   };
 }
 
 const postsFor = (key: string) => mock.orderRequests().filter((r) => r.idempotencyKey === key).length;
+const linksIn = (text: string | undefined) => text?.match(LINK) ?? [];
 
 describe('fulfil', () => {
-  it('1 link end to end: a paid order becomes delivered with one link', async () => {
+  it('1 link end to end: a paid order becomes delivered with one tap-to-copy link', async () => {
     const id = await insertOrder(testDb.db, { quantity: 1 });
     expect(await fulfil(deps(), id)).toBe('delivered');
 
@@ -80,12 +80,22 @@ describe('fulfil', () => {
     expect(item).toMatchObject({ status: 'completed', idempotencyKey: `${id}-0`, attempts: 1 });
     expect(item?.deliveredAt).toBeInstanceOf(Date);
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.chatId).toBe(42);
-    expect(sent[0]?.text.match(LINK)).toEqual([item?.activationLink]);
-    expect(sent[0]?.text).toContain('payment confirmed.');
-    expect(sent[0]?.text).toContain('whatsapp 08087357158');
+    expect(tg.sent).toHaveLength(1);
+    const [message] = tg.sent;
+    expect(message).toMatchObject({ chatId: 42, html: true });
+    expect(message?.text).toBe(
+      [
+        `payment confirmed ✅ order ${order.orderNo}`,
+        'your link, tap to copy:',
+        `<code>${item?.activationLink}</code>`,
+        "open the browser where you're already signed in to the google account you want it on, paste the link and activate it.",
+        '⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.',
+      ].join('\n'),
+    );
+    expect(tg.buttons(message?.id).map((b) => b.text)).toEqual(['need help on whatsapp', 'my orders']);
     expect(mock.state.orders).toHaveLength(1);
+    // claimed, then delivered: the status message is refreshed both times
+    expect(changed).toEqual([id, id]);
   });
 
   it('3 links where item 2 fails: 1 and 3 delivered, order partial, alert, retry completes it without rebuying', async () => {
@@ -93,26 +103,26 @@ describe('fulfil', () => {
     mock.failNthItem(2);
 
     expect(await fulfil(deps(), id)).toBe('partial');
-    expect((await getOrder(testDb.db, id)).status).toBe('partial');
+    const order = await getOrder(testDb.db, id);
+    expect(order.status).toBe('partial');
     let items = await getItems(testDb.db, id);
     expect(items.map((i) => i.status)).toEqual(['completed', 'failed', 'completed']);
     expect(items[1]?.error).toBe('supplier_purchase_failed');
     expect(alerts.map((a) => a.title)).toEqual(['partial order']);
 
-    expect(sent).toHaveLength(1);
-    const firstText = sent[0]?.text ?? '';
-    expect(firstText.match(LINK)).toEqual([items[0]?.activationLink, items[2]?.activationLink]);
-    expect(firstText).toContain(`1. ${items[0]?.activationLink}`);
-    expect(firstText).toContain(`3. ${items[2]?.activationLink}`);
-    expect(firstText).toContain('the other link is on the way');
+    const first = tg.sent[0]?.text ?? '';
+    expect(linksIn(first)).toEqual([items[0]?.activationLink, items[2]?.activationLink]);
+    expect(first).toContain(`link 1 of 3\n<code>${items[0]?.activationLink}</code>`);
+    expect(first).toContain(`link 3 of 3\n<code>${items[2]?.activationLink}</code>`);
+    expect(first).toContain("the other link is being sorted, we'll send it here.");
 
     mock.clearFailures();
     expect(await fulfil(deps(), id)).toBe('delivered');
     items = await getItems(testDb.db, id);
     expect(items.every((i) => i.status === 'completed' && i.deliveredAt)).toBe(true);
-    expect(sent).toHaveLength(2);
-    expect(sent[1]?.text).toContain('here is the rest of your order:');
-    expect(sent[1]?.text.match(LINK)).toEqual([items[1]?.activationLink]);
+    expect(tg.sent).toHaveLength(2);
+    expect(tg.sent[1]?.text).toContain(`more of order ${order.orderNo} is ready ✅`);
+    expect(linksIn(tg.sent[1]?.text)).toEqual([items[1]?.activationLink]);
 
     expect(mock.state.orders).toHaveLength(3);
     expect(postsFor(itemIdempotencyKey(id, 0))).toBe(1);
@@ -125,7 +135,7 @@ describe('fulfil', () => {
     expect(outcomes.sort()).toEqual(['delivered', 'not_claimed']);
     expect(mock.state.orders).toHaveLength(3);
     for (let idx = 0; idx < 3; idx++) expect(postsFor(itemIdempotencyKey(id, idx))).toBe(1);
-    expect(sent).toHaveLength(1);
+    expect(tg.sent).toHaveLength(1);
   });
 
   it('crash simulation: an expired lease lets a second run finish without duplicate purchases', async () => {
@@ -155,7 +165,42 @@ describe('fulfil', () => {
     expect(mock.state.orders).toHaveLength(2);
     const items = await getItems(testDb.db, id);
     expect(items[0]?.activationLink).toBe(boughtBeforeCrash.value);
-    expect(sent[0]?.text.match(LINK)).toHaveLength(2);
+    expect(linksIn(tg.sent[0]?.text)).toHaveLength(2);
+  });
+
+  it('splits many links over several messages under the Telegram limit, buttons on the last only', async () => {
+    const id = await insertOrder(testDb.db, { quantity: 10 });
+    // Long links push the order past 4096 characters.
+    await testDb.db.insert(orderItems).values(
+      Array.from({ length: 10 }, (_, idx) => ({
+        orderId: id,
+        idx,
+        idempotencyKey: itemIdempotencyKey(id, idx),
+        status: 'completed' as const,
+        activationLink: `https://one.google.com/activate/${idx}-${'x'.repeat(500)}`,
+      })),
+    );
+    expect(await fulfil(deps(), id)).toBe('delivered');
+    expect(tg.sent.length).toBeGreaterThan(1);
+    for (const m of tg.sent) expect(m.text.length).toBeLessThanOrEqual(4096);
+    expect(tg.sent.flatMap((m) => m.text.match(/link \d+ of 10/g) ?? [])).toHaveLength(10);
+    expect(tg.sent.slice(0, -1).every((m) => !m.keyboard)).toBe(true);
+    expect(tg.sent.at(-1)?.keyboard).toBeDefined();
+    expect((await getItems(testDb.db, id)).every((i) => i.deliveredAt)).toBe(true);
+  });
+
+  it('escapes html in links', async () => {
+    const id = await insertOrder(testDb.db, { quantity: 1 });
+    await testDb.db.insert(orderItems).values({
+      orderId: id,
+      idx: 0,
+      idempotencyKey: itemIdempotencyKey(id, 0),
+      status: 'completed',
+      activationLink: 'https://x.test/a?b=1&c=<d>',
+    });
+    await fulfil(deps(), id);
+    expect(tg.sent[0]?.text).toContain('<code>https://x.test/a?b=1&amp;c=&lt;d&gt;</code>');
+    expect((await getItems(testDb.db, id))[0]?.deliveredAt).toBeInstanceOf(Date);
   });
 
   it('nothing bought: needs_attention, owner alerted, buyer told once, completes after a restock', async () => {
@@ -165,24 +210,22 @@ describe('fulfil', () => {
     expect(await fulfil(deps(), id)).toBe('needs_attention');
     expect((await getOrder(testDb.db, id)).error).toContain('out_of_stock');
     expect(alerts).toMatchObject([{ level: 'critical', title: 'paid order not fulfilled' }]);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.text).toContain('taking a little longer than usual');
-    expect(sent[0]?.text).not.toMatch(LINK);
+    expect(tg.sent).toHaveLength(1);
+    expect(tg.sent[0]?.text).toContain('taking a little longer than usual');
+    expect(linksIn(tg.sent[0]?.text)).toEqual([]);
 
     // A retry that still fails does not message the buyer again.
     expect(await fulfil(deps(), id)).toBe('needs_attention');
-    expect(sent).toHaveLength(1);
+    expect(tg.sent).toHaveLength(1);
 
     mock.set({ stock: 10 });
     expect(await fulfil(deps(), id)).toBe('delivered');
-    expect(sent[1]?.text).toContain('here are your 2 links:');
+    expect(tg.sent[1]?.text).toContain('your links, tap to copy:');
   });
 
   it('a buyer who blocked the bot: needs_attention, alert, links kept for support', async () => {
     const id = await insertOrder(testDb.db, { quantity: 1 });
-    sendImpl = async () => {
-      throw new DeliveryError('blocked', 'telegram 403: Forbidden: bot was blocked by the user');
-    };
+    tg.block(42);
 
     expect(await fulfil(deps(), id)).toBe('needs_attention');
     expect((await getOrder(testDb.db, id)).error).toContain('blocked');
@@ -196,18 +239,13 @@ describe('fulfil', () => {
 
   it('a transient send failure hands the order back, and the retry delivers without rebuying', async () => {
     const id = await insertOrder(testDb.db, { quantity: 1 });
-    sendImpl = async () => {
-      throw new DeliveryError('failed', 'telegram send failed: HttpError');
-    };
+    tg.failNextSends(1);
     expect(await fulfil(deps(), id)).toBe('delivery_failed');
     expect((await getOrder(testDb.db, id)).status).toBe('paid');
 
-    sendImpl = async (chatId, text) => {
-      sent.push({ chatId, text });
-    };
     expect(await fulfil(deps(), id)).toBe('delivered');
     expect(mock.state.orders).toHaveLength(1);
-    expect(sent).toHaveLength(1);
+    expect(tg.sent).toHaveLength(1);
   });
 
   it('never fulfils a payment held for review (paid_at is null)', async () => {

@@ -1,9 +1,11 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { asc, eq, inArray, sql } from 'drizzle-orm';
+import { escapeHtml, SendError, type TelegramPort } from '../bot/telegram.js';
+import { delayedMessage, linksMessages, type UiFacts } from '../bot/views.js';
 import type { Db } from '../db/client.js';
 import { events, orderItems, orders, users, type Order, type OrderItem } from '../db/schema.js';
 import type { Logger } from '../util/logger.js';
-import { DeliveryError, delayedMessage, linksMessage, type SendMessage } from './delivery.js';
+import { Semaphore } from '../util/semaphore.js';
 import type { Notify } from './notifier.js';
 import { claimForFulfilment, finishFulfilment, renewLease } from './orders.js';
 import { ResellerError, type ResellerClient } from './reseller.js';
@@ -16,10 +18,12 @@ export interface FulfilmentDeps {
   db: Db;
   reseller: Pick<ResellerClient, 'createOrder'>;
   productId: number;
-  send: SendMessage;
+  port: TelegramPort;
+  facts: UiFacts;
   notify: Notify;
   logger: Logger;
-  supportWhatsapp: string;
+  /** Called after every status change, to keep the buyer's status message live. */
+  onChange?: (orderId: string) => void;
   /** Waits between tries of one link after out_of_stock, insufficient_funds or a supplier failure. */
   itemRetryDelaysMs?: number[];
 }
@@ -35,8 +39,10 @@ export function itemIdempotencyKey(orderId: string, idx: number): string {
   return `${orderId}-${idx}`;
 }
 
-export function createFulfilment(deps: FulfilmentDeps) {
-  return { fulfil: (orderId: string) => fulfil(deps, orderId) };
+/** At most `concurrency` orders are bought at once, so a rush of payments cannot flood the reseller. */
+export function createFulfilment(deps: FulfilmentDeps, concurrency = 3) {
+  const slots = new Semaphore(concurrency);
+  return { fulfil: (orderId: string) => slots.run(() => fulfil(deps, orderId)) };
 }
 
 export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<FulfilOutcome> {
@@ -44,8 +50,9 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
   const [before] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId));
   const order = await claimForFulfilment(db, orderId);
   if (!order) return 'not_claimed';
+  deps.onChange?.(orderId);
 
-  const log = deps.logger.child({ orderId });
+  const log = deps.logger.child({ orderId, orderNo: order.orderNo });
   log.info({ quantity: order.quantity, from: before?.status }, 'fulfilment started');
   await ensureItems(db, order);
 
@@ -55,7 +62,7 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
     await renewLease(db, orderId);
     const result = await buyItem(deps, item, log);
     if (result !== 'completed') failures.push(`link ${item.idx + 1}: ${result}`);
-    if (result === 'invalid_api_key' || result === 'missing_api_key') break;
+    if (AUTH_FAILED.has(result)) break;
   }
 
   const items = await loadItems(db, orderId);
@@ -65,29 +72,36 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
   const deliveredBefore = bought.length - fresh.length;
 
   if (fresh.length > 0) {
-    const text = linksMessage({
-      links: fresh.map((i) => ({ number: i.idx + 1, link: i.activationLink as string })),
+    const parts = linksMessages({
+      orderNo: order.orderNo,
       quantity: order.quantity,
-      first: deliveredBefore === 0,
+      links: fresh.map((i) => ({ number: i.idx + 1, link: i.activationLink as string })),
+      mode: deliveredBefore === 0 ? 'first' : 'more',
       remaining,
-      supportWhatsapp: deps.supportWhatsapp,
+      facts: deps.facts,
     });
-    try {
-      await deps.send(order.telegramId, text);
-    } catch (err) {
-      return deliveryFailed(deps, order, err, deliveredBefore > 0, log);
+    for (const part of parts) {
+      try {
+        await deps.port.send(order.telegramId, part);
+      } catch (err) {
+        return finish(deps, deliveryFailed(deps, order, err, deliveredBefore > 0, log), orderId);
+      }
+      // Delivered only once Telegram accepted the message that carries the link.
+      const inPart = fresh.filter((i) => part.text.includes(escapeHtml(i.activationLink as string)));
+      if (inPart.length > 0) {
+        await db
+          .update(orderItems)
+          .set({ deliveredAt: sql`now()` })
+          .where(inArray(orderItems.id, inPart.map((i) => i.id)));
+      }
     }
-    await db
-      .update(orderItems)
-      .set({ deliveredAt: sql`now()` })
-      .where(inArray(orderItems.id, fresh.map((i) => i.id)));
     log.info({ links: fresh.length }, 'links delivered');
   }
 
   if (remaining === 0) {
     await finishFulfilment(db, orderId, 'delivered', null);
     log.info('order delivered');
-    return 'delivered';
+    return finish(deps, Promise.resolve('delivered'), orderId);
   }
 
   const reason = failures.join('; ') || 'links not bought yet';
@@ -96,24 +110,30 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
     deps.notify({
       level: 'warning',
       title: 'partial order',
-      body: `Order ${orderId}: ${bought.length} of ${order.quantity} links delivered. ${reason}. It will be retried.`,
+      body: `Order ${order.orderNo}: ${bought.length} of ${order.quantity} links delivered. ${reason}. It will be retried.`,
     });
-    return 'partial';
+    return finish(deps, Promise.resolve('partial'), orderId);
   }
 
   await finishFulfilment(db, orderId, 'needs_attention', reason);
   deps.notify({
     level: 'critical',
     title: 'paid order not fulfilled',
-    body: `Order ${orderId} (${order.quantity} links) is paid but no link could be bought. ${reason}.`,
+    body: `Order ${order.orderNo} (${order.quantity} links) is paid but no link could be bought. ${reason}.`,
   });
   if (before?.status === 'paid') {
     // First attempt only, so retries do not spam the buyer.
-    await deps
-      .send(order.telegramId, delayedMessage({ quantity: order.quantity, supportWhatsapp: deps.supportWhatsapp }))
+    await deps.port
+      .send(order.telegramId, delayedMessage(order, deps.facts))
       .catch((err: unknown) => log.warn({ err: describe(err) }, 'could not tell the buyer about the delay'));
   }
-  return 'needs_attention';
+  return finish(deps, Promise.resolve('needs_attention'), orderId);
+}
+
+async function finish(deps: FulfilmentDeps, outcome: Promise<FulfilOutcome>, orderId?: string): Promise<FulfilOutcome> {
+  const result = await outcome;
+  if (orderId) deps.onChange?.(orderId);
+  return result;
 }
 
 async function ensureItems(db: Db, order: Order): Promise<void> {
@@ -185,18 +205,18 @@ async function deliveryFailed(
   log: Logger,
 ): Promise<FulfilOutcome> {
   const { db } = deps;
-  if (err instanceof DeliveryError && err.kind === 'blocked') {
+  if (err instanceof SendError && err.kind === 'blocked') {
     await db.update(users).set({ blocked: true }).where(eq(users.telegramId, order.telegramId));
     await finishFulfilment(db, order.id, 'needs_attention', `delivery blocked: ${err.message}`);
     log.warn({ err: err.message }, 'buyer blocked the bot; links kept for support');
     deps.notify({
       level: 'critical',
       title: 'could not deliver links',
-      body: `Order ${order.id}: Telegram refused delivery (${err.message}). The links are saved; send them by hand.`,
+      body: `Order ${order.orderNo}: Telegram refused delivery (${err.message}). The links are saved; send them with /resend.`,
     });
     return 'needs_attention';
   }
-  // Transient: hand the order back so the next run sends the links again.
+  // Transient: hand the order back so the next run sends the undelivered links again.
   await finishFulfilment(db, order.id, someDeliveredBefore ? 'partial' : 'paid', `delivery failed: ${describe(err)}`);
   log.warn({ err: describe(err) }, 'link delivery failed, will retry');
   return 'delivery_failed';

@@ -8,6 +8,7 @@ import {
   integer,
   jsonb,
   pgEnum,
+  pgSequence,
   pgTable,
   text,
   timestamp,
@@ -27,7 +28,12 @@ export const users = pgTable('users', {
   createdAt: timestamptz('created_at').notNull().defaultNow(),
   lastSeenAt: timestamptz('last_seen_at').notNull().defaultNow(),
   blocked: boolean('blocked').notNull().default(false),
+  // 'en' or 'pcm' (Nigerian Pidgin), guessed from what they write.
+  lang: text('lang', { enum: ['en', 'pcm'] }).notNull().default('en'),
 });
+
+// Human readable order numbers: GP-1001, GP-1002, ... (the uuid stays internal).
+export const orderNoSeq = pgSequence('order_no_seq', { startWith: 1001 });
 
 export const orderStatus = pgEnum('order_status', [
   'created',
@@ -46,6 +52,10 @@ export const orders = pgTable(
   'orders',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    orderNo: text('order_no')
+      .notNull()
+      .unique()
+      .default(sql`'GP-' || nextval('order_no_seq')`),
     telegramId: bigint('telegram_id', { mode: 'number' })
       .notNull()
       .references(() => users.telegramId),
@@ -62,6 +72,12 @@ export const orders = pgTable(
     expiresAt: timestamptz('expires_at'),
     deliveredAt: timestamptz('delivered_at'),
     nudgeSent: boolean('nudge_sent').notNull().default(false),
+    // Chat messages kept in sync with the order (Telegram message ids in the buyer's chat).
+    summaryMessageId: integer('summary_message_id'),
+    payMessageId: integer('pay_message_id'),
+    statusMessageId: integer('status_message_id'),
+    reminderSentAt: timestamptz('reminder_sent_at'),
+    activatedConfirmedAt: timestamptz('activated_confirmed_at'),
     fulfilLeaseUntil: timestamptz('fulfil_lease_until'),
     error: text('error'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
@@ -134,6 +150,15 @@ export const messages = pgTable('messages', {
 export const settings = pgTable('settings', {
   key: text('key').primaryKey(),
   value: jsonb('value'),
+});
+
+// Business inquiries the agent saved (save_lead).
+export const leads = pgTable('leads', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  telegramId: bigint('telegram_id', { mode: 'number' }).notNull(),
+  username: text('username'),
+  summary: text('summary').notNull(),
+  createdAt: timestamptz('created_at').notNull().defaultNow(),
 });
 
 export type User = typeof users.$inferSelect;
