@@ -54,7 +54,10 @@ export const orders = pgTable(
     feeNgn: integer('fee_ngn').notNull().default(0),
     amountNgn: integer('amount_ngn').notNull(),
     status: orderStatus('status').notNull().default('created'),
-    paystackReference: text('paystack_reference').notNull().unique(),
+    // `gp_${id}`, sent to Bachs as the checkout reference
+    paymentReference: text('payment_reference').notNull().unique(),
+    checkoutId: text('checkout_id').unique(),
+    checkoutUrl: text('checkout_url'),
     paidAt: timestamptz('paid_at'),
     expiresAt: timestamptz('expires_at'),
     deliveredAt: timestamptz('delivered_at'),
@@ -106,9 +109,10 @@ export const events = pgTable(
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('events_paystack_webhook_ref_idx')
+    // Bachs delivers at least once; ref is the event id.
+    uniqueIndex('events_bachs_webhook_ref_idx')
       .on(t.kind, t.ref)
-      .where(sql`kind = 'paystack_webhook'`),
+      .where(sql`kind = 'bachs_webhook'`),
   ],
 );
 
