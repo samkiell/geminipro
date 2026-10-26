@@ -6,6 +6,7 @@ import { latestLeads } from '../services/leads.js';
 import type { Notify } from '../services/notifier.js';
 import { findOrderByNo, recordLinkMessage, reservedUnits } from '../services/orders.js';
 import type { ResellerClient } from '../services/reseller.js';
+import { activeProof, addProof, MAX_PROOF, removeProof } from '../services/proof.js';
 import { getOfferText, isPaused, setOfferText, setPaused } from '../services/settings.js';
 import { activationLine, salesStats } from '../services/stats.js';
 import type { Logger } from '../util/logger.js';
@@ -33,7 +34,7 @@ const PANEL_TEXT = [
   'admin panel. tap a button, or type a command:',
   '/order GP-1042 · /resend GP-1042 · /replace GP-1042',
   '/offertext <text> · /pause · /resume',
-  '/stats · /balance · /allorders · /leads',
+  '/stats · /balance · /allorders · /leads · /proofs',
 ].join('\n');
 const PANEL: Keyboard = [
   [
@@ -48,6 +49,7 @@ const PANEL: Keyboard = [
     { text: 'leads', data: 'ad:p:leads' },
     { text: 'offer text', data: 'ad:p:offer' },
   ],
+  [{ text: 'proof screenshots', data: 'ad:p:proofs' }],
   [
     { text: 'pause sales', data: 'ad:p:pause' },
     { text: 'resume sales', data: 'ad:p:resume' },
@@ -135,6 +137,16 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
     return rows
       .map((l) => `${l.username ? `@${l.username}` : l.telegramId}: ${l.summary} · ${watDateTime(l.createdAt)}`)
       .join('\n');
+  }
+
+  async function proofsView(): Promise<string> {
+    const items = await activeProof(db);
+    if (items.length === 0) return 'no proof screenshots yet. send a photo with the caption /addproof, or add files to assets/proof/.';
+    return [
+      `proof album (${items.length} of ${MAX_PROOF}), in order:`,
+      ...items.map((p, i) => `${i + 1}. ${p.key.startsWith('tg:') ? 'sent in telegram' : p.key}${p.fileId ? '' : ' (not uploaded yet)'}`),
+      'remove one with /delproof <n>.',
+    ].join('\n');
   }
 
   async function offerView(): Promise<OutMessage> {
@@ -353,6 +365,29 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
     await reply(ctx, { text: await changeOffer(ctx.match.trim()) });
   });
 
+  // Proof screenshots: real, with personal details blurred (README checklist). Never generated.
+  admin.on('message:photo', async (ctx, next) => {
+    if (!/^\/addproof\b/i.test(ctx.message.caption ?? '')) return next();
+    const photo = ctx.message.photo.at(-1);
+    if (!photo) return;
+    const result = await addProof(db, photo.file_id, photo.file_unique_id);
+    await reply(ctx, {
+      text: {
+        added: `added. the album now has ${(await activeProof(db)).length} of ${MAX_PROOF}. check it with /proofs.`,
+        exists: 'that screenshot is already in the album.',
+        full: `the album is full (${MAX_PROOF}). remove one with /delproof <n> first.`,
+      }[result],
+    });
+  });
+  admin.command('proofs', async (ctx) => {
+    await reply(ctx, { text: await proofsView() });
+  });
+  admin.command('delproof', async (ctx) => {
+    const n = Number(ctx.match.trim());
+    const removed = Number.isInteger(n) && n > 0 ? await removeProof(db, n) : undefined;
+    await reply(ctx, { text: removed ? `removed ${n}. ${await proofsView()}` : 'which one? see /proofs, then /delproof 2' });
+  });
+
   // Replies to the panel's "find an order" and "change offer text" prompts.
   admin.on('message:text', async (ctx, next) => {
     const asked = ctx.message.reply_to_message;
@@ -391,6 +426,7 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
       if (arg === 'orders') return show(await ordersView());
       if (arg === 'leads') return show({ text: await leadsView(), keyboard: BACK });
       if (arg === 'offer') return show(await offerView());
+      if (arg === 'proofs') return show({ text: await proofsView(), keyboard: BACK });
       if (arg === 'pause' || arg === 'resume') {
         await setPaused(db, arg === 'pause');
         return show({ text: arg === 'pause' ? 'sales paused.' : 'sales are on again.', keyboard: BACK });

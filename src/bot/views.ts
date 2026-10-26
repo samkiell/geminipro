@@ -40,6 +40,8 @@ export const cb = {
   help: (page: HelpPage | 'hub') => `hp:${page}`,
   activated: (orderId: string) => `a:y:${orderId}`,
   activationHelp: (orderId: string) => `a:h:${orderId}`,
+  price: (quantity: number) => `pr:${quantity}`,
+  proof: 'pf',
   // One link: "i've activated it", then "yes" or "not yet".
   activate: (itemId: string) => `v:${itemId}`,
   activateYes: (itemId: string) => `v:y:${itemId}`,
@@ -118,7 +120,10 @@ export function summaryCard({ order, maxQuantity, offerText, facts }: SummaryInp
     ],
   ];
   if (order.checkoutUrl) keyboard.push([{ text: `pay ${payLabel(order, facts)}`, url: order.checkoutUrl }]);
-  keyboard.push([{ text: 'cancel', data: cb.cancel(order.id) }]);
+  keyboard.push([
+    { text: 'see proof', data: cb.proof },
+    { text: 'cancel', data: cb.cancel(order.id) },
+  ]);
   return {
     text: [
       `order summary · ${order.orderNo}`,
@@ -409,8 +414,21 @@ export function helpHub(facts: UiFacts): OutMessage {
   const topics = HELP_TOPICS.map((t) => ({ text: t.label, data: cb.help(t.page) }));
   const keyboard: Keyboard = [];
   for (let i = 0; i < topics.length; i += 2) keyboard.push(topics.slice(i, i + 2));
-  keyboard.push([{ text: 'my orders', data: cb.history(1) }, supportButton(facts, undefined, 'support')]);
+  keyboard.push([{ text: 'see proof', data: cb.proof }, { text: 'my orders', data: cb.history(1) }]);
+  keyboard.push([supportButton(facts, undefined, 'support')]);
   return { text: HELP_HUB_TEXT, keyboard };
+}
+
+// ---------------------------------------------------------------- price (no order yet)
+
+/** "3 links: ₦10,500 + fee" with a buy button. `totalNgn` already includes the fee when grossed up. */
+export function priceView(quantity: number, totalNgn: number, facts: UiFacts): OutMessage {
+  const q = Math.max(1, quantity);
+  const total = facts.grossUp ? `${naira(totalNgn)} in total` : `${naira(totalNgn)} + fee`;
+  return {
+    text: q === 1 ? `one link is ${total}. it lands here about a minute after you pay.` : `${q} links come to ${total}. they land here about a minute after you pay.`,
+    keyboard: [[{ text: q === 1 ? 'buy a link' : `buy ${q}`, data: cb.buy(q) }, { text: 'see proof', data: cb.proof }]],
+  };
 }
 
 export function helpView(page: HelpPage, facts: UiFacts, offerText: string): OutMessage {

@@ -20,4 +20,6 @@ export const ADMIN_COMMANDS = [
   { command: 'resume', description: 'restart sales' },
   { command: 'offertext', description: 'show or set the offer line' },
   { command: 'leads', description: 'latest business inquiries' },
+  { command: 'proofs', description: 'proof screenshots (add: send a photo captioned /addproof)' },
+  { command: 'delproof', description: 'remove a proof screenshot: /delproof 2' },
 ];

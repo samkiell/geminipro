@@ -1,4 +1,4 @@
-import { SendError, type Keyboard, type OutMessage, type TelegramPort } from '../../src/bot/telegram.js';
+import { SendError, type AlbumPhoto, type Keyboard, type OutMessage, type TelegramPort } from '../../src/bot/telegram.js';
 import type { UiFacts } from '../../src/bot/views.js';
 
 export const facts: UiFacts = {
@@ -22,10 +22,17 @@ export function fakePort() {
   const sent: ChatMessage[] = [];
   const edits: { id: number; text: string }[] = [];
   const answers: { queryId: string; text: string | undefined }[] = [];
+  const albums: { chatId: number; photos: AlbumPhoto[]; caption: string }[] = [];
   const blocked = new Set<number>();
   let failSends = 0;
+  let nextFile = 1;
 
   const port: TelegramPort = {
+    async sendAlbum(chatId, photos, caption) {
+      if (blocked.has(chatId)) throw new SendError('blocked', 'telegram 403: Forbidden: bot was blocked by the user');
+      albums.push({ chatId, photos, caption });
+      return photos.map((p) => ('fileId' in p ? p.fileId : `file-${nextFile++}`));
+    },
     async send(chatId, message) {
       if (blocked.has(chatId)) throw new SendError('blocked', 'telegram 403: Forbidden: bot was blocked by the user');
       if (failSends > 0) {
@@ -63,6 +70,7 @@ export function fakePort() {
     sent,
     edits,
     answers,
+    albums,
     /** Current state of a message. */
     get: (id: number | null | undefined) => (id ? messages.get(id) : undefined),
     block: (chatId: number) => blocked.add(chatId),

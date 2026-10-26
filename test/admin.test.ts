@@ -68,7 +68,9 @@ function makeBot(): Bot {
     port: tg.port,
     flows,
     facts,
-    agent: { available: () => false, reply: async () => ({ text: '', failed: true, toolCalls: [] }) },
+    pricing: { unitPriceNgn: 3500, grossUp: false, feePct: 0.02, feeFlat: 0 },
+    brain: { decide: async () => ({ ok: false, failure: 'rate_limited' }) },
+    proof: { send: async () => 'sent' },
     saveLead: async () => 'saved',
     registerAdmin: (b) =>
       registerAdmin(b, {
@@ -229,6 +231,7 @@ describe('admin commands', () => {
       'find an order',
       'leads',
       'offer text',
+      'proof screenshots',
       'pause sales',
       'resume sales',
     ]);

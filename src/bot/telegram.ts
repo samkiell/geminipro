@@ -1,4 +1,4 @@
-import { GrammyError, InlineKeyboard, type Api } from 'grammy';
+import { GrammyError, InlineKeyboard, InputFile, type Api } from 'grammy';
 
 // A small port over the Bot API: everything that renders to a chat goes through it, so views stay
 // pure and tests can record what would have been sent or edited.
@@ -29,9 +29,14 @@ export class SendError extends Error {
   }
 }
 
+/** A photo already on Telegram (its file_id), or a local file to upload. */
+export type AlbumPhoto = { fileId: string } | { path: string };
+
 export interface TelegramPort {
   /** Returns the new message id. Throws SendError. */
   send(chatId: number, message: OutMessage): Promise<number>;
+  /** Up to 10 photos as one album, the caption on the first. Returns each photo's file_id. Throws SendError. */
+  sendAlbum(chatId: number, photos: AlbumPhoto[], caption: string): Promise<string[]>;
   /** Replaces text and buttons (no keyboard removes them). Never throws. */
   edit(chatId: number, messageId: number, message: OutMessage): Promise<EditOutcome>;
   /** Replaces only the buttons (none removes them). Never throws. */
@@ -90,6 +95,22 @@ export function grammyPort(api: Api): TelegramPort {
           }),
         });
         return sent.message_id;
+      } catch (err) {
+        throw sendError(err);
+      }
+    },
+    async sendAlbum(chatId, photos, caption) {
+      try {
+        const sent = await api.sendMediaGroup(
+          chatId,
+          photos.slice(0, 10).map((p, i) => ({
+            type: 'photo' as const,
+            media: 'fileId' in p ? p.fileId : new InputFile(p.path),
+            ...(i === 0 && { caption }),
+          })),
+        );
+        // The largest size of each photo; reusing its file_id sends it again without an upload.
+        return sent.map((m) => ('photo' in m ? m.photo.at(-1)?.file_id : undefined) ?? '');
       } catch (err) {
         throw sendError(err);
       }

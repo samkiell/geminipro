@@ -165,6 +165,19 @@ export const leads = pgTable('leads', {
   createdAt: timestamptz('created_at').notNull().defaultNow(),
 });
 
+// Proof screenshots (Prompt C section 6), seeded from assets/proof/ and added by admins with
+// /addproof. file_id is Telegram's id after the first upload, so later sends are instant.
+export const proofItems = pgTable('proof_items', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  // The file name in assets/proof/, or "tg:<file_unique_id>" for one an admin sent.
+  key: text('key').notNull().unique(),
+  fileId: text('file_id'),
+  caption: text('caption'),
+  position: integer('position').notNull().default(0),
+  active: boolean('active').notNull().default(true),
+  createdAt: timestamptz('created_at').notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type OrderStatus = (typeof orderStatus.enumValues)[number];

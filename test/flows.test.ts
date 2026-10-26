@@ -83,7 +83,7 @@ describe('buying', () => {
     expect(order?.payMessageId).toBe(tg.sent[0]?.id);
     expect(order?.statusMessageId).toBe(tg.sent[1]?.id);
     expect(tg.sent[0]?.text).toContain(`order summary · ${order?.orderNo}`);
-    expect(tg.buttons(order?.summaryMessageId).map((b) => b.text)).toEqual(['−', '2', '+', 'pay ₦7,000 + fee', 'cancel']);
+    expect(tg.buttons(order?.summaryMessageId).map((b) => b.text)).toEqual(['−', '2', '+', 'pay ₦7,000 + fee', 'see proof', 'cancel']);
     expect(tg.sent[1]?.text).toContain('⏳ waiting for payment');
     expect(checkouts).toHaveLength(1);
   });

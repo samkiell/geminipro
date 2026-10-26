@@ -75,7 +75,10 @@ describe('summary card', () => {
         { text: '+', data: `q:${order.id}:3` },
       ],
       [{ text: 'pay ₦7,000 + fee', url: order.checkoutUrl }],
-      [{ text: 'cancel', data: `x:${order.id}` }],
+      [
+        { text: 'see proof', data: 'pf' },
+        { text: 'cancel', data: `x:${order.id}` },
+      ],
     ]);
     for (const row of card.keyboard ?? []) for (const b of row) if ('data' in b) expect(b.data.length).toBeLessThanOrEqual(64);
   });
