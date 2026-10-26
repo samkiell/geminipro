@@ -132,8 +132,11 @@ async function main(): Promise<void> {
     logger,
     confettiEffectId: config.MESSAGE_EFFECT_CONFETTI,
     onChange: flows.orderChanged,
-    // Late bound: referrals fulfil their rewards through this same engine.
-    onDelivered: (orderId) => referrals.orderDelivered(orderId),
+    // Late bound: referrals fulfil their rewards through this same engine. Not awaited, so the
+    // finished order frees its fulfilment slot before a reward needs one (no slot deadlock).
+    onDelivered: async (orderId) => {
+      void referrals.orderDelivered(orderId).catch((err: unknown) => logger.error({ err, orderId }, 'referral handling failed'));
+    },
   });
   const referrals = createReferrals({
     db,

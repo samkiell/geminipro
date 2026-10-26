@@ -2,6 +2,18 @@
 
 Short answers for running the shop. Admin commands work only in an admin's own chat with the bot. `/admin` opens a panel with a button for every admin command.
 
+## Launch checklist (in this order)
+
+1. Bachs live account: `fee_preference` set to `customer_pays` (keep `GROSS_UP=false`). The boot log and an alert say if the two disagree.
+2. Bachs live webhook endpoint `https://<service>.onrender.com/bachs/webhook` created; copy its signing secret.
+3. On Render, in one go: `BACHS_SECRET_KEY=sk_live_...`, `BACHS_WEBHOOK_SECRET=<live secret>`, `RESELLER_MOCK=false`, the live `RESELLER_API_KEY`. The app refuses to boot with a sandbox/live mismatch. Redeploy (migrations run on start).
+4. Fund the reseller balance on the reseller's bot. `/balance` shows the balance, links covered and stock.
+5. `ADMIN_TELEGRAM_IDS` holds your id (send `/myid` to get it). The boot log line "admin ids configured" shows the count.
+6. Make the bot an administrator of @samkieldevtg, or every buyer passes the gate unchecked and you get "channel gate check failed" alerts.
+7. One real purchase: buy 1 link with a small real payment, get the link with confetti, activate it, check `/stats`.
+8. `pnpm webhook:set` against the live service: sets the Telegram webhook and registers the menus (buyers: start, buy, history, invite, help).
+9. Update the flyer and the channel post to `https://t.me/geminiprosamkiel_bot`.
+
 ## Alerts
 
 Alerts arrive by email, in your Telegram chat with the bot, and on ntfy, all at once (see the README for the list). The same system alert (low balance, rate limits...) comes at most once every 30 minutes, so silence after an alert does not mean it is fixed: check with `/balance` or `/stats`. Order alerts come every time. The daily summary arrives at 21:00 WAT.
