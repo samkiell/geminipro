@@ -318,21 +318,20 @@ export function linksMessages(input: {
   /** Links of this order still on the way. */
   remaining: number;
   facts: UiFacts;
+  isReward?: boolean;
 }): LinksMessage[] {
-  const { orderNo, quantity, links, mode, remaining, facts } = input;
+  const { orderNo, quantity, links, mode, remaining, facts, isReward } = input;
   const open = links.filter((l) => !l.activatedAt);
   const tappable = open.filter((l) => l.itemId);
   const label = (l: LinkItem) => linkLabel(l.number, quantity, links.length);
-  const header = {
-    first: `payment confirmed ✅ order ${orderNo}`,
-    more: `more of order ${orderNo} is ready ✅`,
-    again: `order ${orderNo}`,
-    replacement: `replacement for order ${orderNo} ✅`,
-  }[mode];
-  const intro =
-    open.length > 0
-      ? `your ${plural(open.length, 'link', 'links')}, tap to copy:`
-      : `${plural(links.length, 'this link is', 'these links are')} activated ✅`;
+  const header = isReward
+    ? '🎁 your free link'
+    : {
+        first: `🎉 order ${orderNo} delivered`,
+        more: `more of order ${orderNo} is ready ✅`,
+        again: `order ${orderNo}`,
+        replacement: `replacement for order ${orderNo} ✅`,
+      }[mode];
   const linkBlocks = links.map((l) => {
     const name = label(l);
     if (l.activatedAt) {
@@ -340,7 +339,8 @@ export function linksMessages(input: {
       return name ? `${name}: ${done}` : `${done}.`;
     }
     const code = `<code>${escapeHtml(l.link)}</code>`;
-    return name ? `${name}\n${code}` : code;
+    const keyLabel = name ? `🔑 ${name}, tap to copy:` : '🔑 tap to copy:';
+    return `${keyLabel}\n${code}`;
   });
   const still =
     remaining > 0
@@ -349,16 +349,20 @@ export function linksMessages(input: {
   const footer =
     open.length > 0
       ? [
-          "open the browser where you're already signed in to the google account you want it on, paste the link and activate it.",
-          open.length > 1
-            ? '⚠️ these links expire soon, so activate them now. if one expires before you activate it, there is no refund.'
-            : '⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.',
+          "paste it in the browser where you're signed in to the google account you want it on, then activate.",
+          '⚠️ expires soon. no refund if it expires before you activate it.',
           ...(tappable.length === 1 ? ["once it's activated, tap ✅ below and i'll close it here."] : []),
           ...(tappable.length > 1 ? ["once a link is activated, tap its ✅ below and i'll close it here."] : []),
           ...still,
         ]
       : ['enjoy google ai pro!', ...still];
-  const blocks = [`${header}\n${intro}`, ...linkBlocks, footer.join('\n')];
+  const intro =
+    open.length === 0
+      ? `${plural(links.length, 'this link is', 'these links are')} activated ✅`
+      : mode === 'first'
+        ? undefined
+        : `your ${plural(open.length, 'link', 'links')}, tap to copy:`;
+  const blocks = [intro ? `${header}\n${intro}` : header, ...linkBlocks, footer.join('\n')];
   const groups = packBlocks(blocks);
 
   return groups.map((group, p) => {

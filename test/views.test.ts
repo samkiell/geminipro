@@ -159,11 +159,11 @@ describe('links messages', () => {
     expect(message?.html).toBe(true);
     expect(message?.text).toBe(
       [
-        'payment confirmed ✅ order GP-1042',
-        'your link, tap to copy:',
+        '🎉 order GP-1042 delivered',
+        '🔑 tap to copy:',
         '<code>https://one.google.com/x</code>',
-        "open the browser where you're already signed in to the google account you want it on, paste the link and activate it.",
-        '⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.',
+        "paste it in the browser where you're signed in to the google account you want it on, then activate.",
+        '⚠️ expires soon. no refund if it expires before you activate it.',
       ].join('\n'),
     );
     expect(message?.keyboard).toEqual([
@@ -172,6 +172,20 @@ describe('links messages', () => {
         { text: 'invite & earn \ud83c\udf81', data: 'inv' },
       ],
     ]);
+  });
+
+  it('free referral link uses the reward header', () => {
+    const [message] = linksMessages({
+      orderNo: 'GP-999',
+      quantity: 1,
+      links: [{ number: 1, link: 'https://one.google.com/free' }],
+      mode: 'first',
+      remaining: 0,
+      facts,
+      isReward: true,
+    });
+    expect(message?.text).toContain('🎁 your free link');
+    expect(message?.text).toContain('<code>https://one.google.com/free</code>');
   });
 
   it('several links are numbered, escaped, and never shown as plain urls', () => {
@@ -186,9 +200,8 @@ describe('links messages', () => {
       remaining: 1,
       facts,
     });
-    expect(message?.text).toContain('your links, tap to copy:');
-    expect(message?.text).toContain('link 1 of 3\n<code>https://a.test/1?x=1&amp;y=2</code>');
-    expect(message?.text).toContain('link 3 of 3\n<code>https://a.test/&lt;3&gt;</code>');
+    expect(message?.text).toContain('🔑 link 1 of 3, tap to copy:\n<code>https://a.test/1?x=1&amp;y=2</code>');
+    expect(message?.text).toContain('🔑 link 3 of 3, tap to copy:\n<code>https://a.test/&lt;3&gt;</code>');
     expect(message?.text).toContain("the other link is being sorted, we'll send it here.");
     expect(message?.text.replace(/<code>[^<]*<\/code>/g, '')).not.toMatch(/https?:\/\//);
   });
@@ -206,10 +219,9 @@ describe('links messages', () => {
       remaining: 0,
       facts,
     });
-    expect(message?.text).toContain('your links, tap to copy:');
     expect(message?.text).toContain('link 1 of 3: activated ✅ 26 oct, closed');
     expect(message?.text).not.toContain('https://a.test/1');
-    expect(message?.text).toContain('link 2 of 3\n<code>https://a.test/2</code>');
+    expect(message?.text).toContain('🔑 link 2 of 3, tap to copy:\n<code>https://a.test/2</code>');
     expect(message?.text).toContain("once a link is activated, tap its ✅ below and i'll close it here.");
     expect(message?.keyboard).toEqual([
       [
@@ -247,7 +259,7 @@ describe('links messages', () => {
 
   it('replacement links are named as such', () => {
     const [message] = linksMessages({ orderNo: 'GP-7', quantity: 1, links: [{ number: 2, link: 'https://a.test/r', itemId: 'r' }], mode: 'replacement', remaining: 0, facts });
-    expect(message?.text).toContain('replacement for order GP-7 ✅\nyour link, tap to copy:\nreplacement link\n<code>https://a.test/r</code>');
+    expect(message?.text).toContain('replacement for order GP-7 ✅\nyour link, tap to copy:\n🔑 replacement link, tap to copy:\n<code>https://a.test/r</code>');
     expect(message?.keyboard?.[0]).toEqual([{ text: '✅ replacement link activated', data: 'v:r' }]);
   });
 

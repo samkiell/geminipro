@@ -118,6 +118,7 @@ async function main(): Promise<void> {
     facts,
     notify,
     logger,
+    confettiEffectId: config.MESSAGE_EFFECT_CONFETTI,
     onChange: flows.orderChanged,
   });
 

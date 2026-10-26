@@ -22,6 +22,8 @@ export interface FulfilmentDeps {
   facts: UiFacts;
   notify: Notify;
   logger: Logger;
+  /** Telegram message effect id (confetti) for initial delivery message. */
+  confettiEffectId?: string;
   /** Called after every status change, to keep the buyer's status message live. */
   onChange?: (orderId: string) => void;
   /** Waits between tries of one link after out_of_stock, insufficient_funds or a supplier failure. */
@@ -73,6 +75,7 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
   const deliveredBefore = bought.length - fresh.length;
 
   if (fresh.length > 0) {
+    const isReward = (order as { source?: string | null }).source === 'referral_reward';
     const parts = linksMessages({
       orderNo: order.orderNo,
       quantity: order.quantity,
@@ -80,7 +83,11 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
       mode: deliveredBefore === 0 ? 'first' : 'more',
       remaining,
       facts: deps.facts,
+      isReward,
     });
+    if (deliveredBefore === 0 && deps.confettiEffectId && parts[0]) {
+      parts[0].messageEffectId = deps.confettiEffectId;
+    }
     for (const part of parts) {
       let messageId: number;
       try {

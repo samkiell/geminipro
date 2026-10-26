@@ -450,7 +450,7 @@ describe('acceptance: buy 3, pay, receive tap-to-copy links, find them in histor
     await app.close();
 
     // three tap-to-copy links, in one message, buttons attached
-    const delivery = tg.sent.find((m) => m.text.startsWith('payment confirmed ✅'));
+    const delivery = tg.sent.find((m) => m.text.startsWith('🎉 order'));
     expect(delivery?.text.match(/<code>https:\/\/mock-reseller\.local\/activate\/[0-9a-f]+<\/code>/g)).toHaveLength(3);
     expect(delivery?.text).toContain('link 3 of 3');
     expect(tg.buttons(delivery?.id).map((b) => b.text)).toEqual([

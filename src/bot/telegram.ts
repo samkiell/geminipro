@@ -13,6 +13,8 @@ export interface OutMessage {
   keyboard?: Keyboard;
   /** Opens the reply box under this message with this placeholder (instead of a keyboard). Send only. */
   forceReply?: string;
+  /** Telegram message effect id for sendMessage (e.g. confetti). Private chats only. */
+  messageEffectId?: string;
 }
 
 /** 'gone': the message no longer exists or can no longer be edited. 'failed': try again later. */
@@ -91,6 +93,22 @@ export function grammyPort(api: Api): TelegramPort {
   });
   return {
     async send(chatId, message) {
+      if (message.messageEffectId) {
+        try {
+          const sent = await api.sendMessage(chatId, message.text, {
+            ...options(message),
+            message_effect_id: message.messageEffectId,
+            ...(message.forceReply !== undefined && {
+              reply_markup: { force_reply: true as const, input_field_placeholder: message.forceReply },
+            }),
+          });
+          return sent.message_id;
+        } catch (err) {
+          // Resend once without the effect only when Telegram definitely rejected the request (400).
+          // Anything else (timeout, network) may have been delivered, so never send the links twice.
+          if (!(err instanceof GrammyError && err.error_code === 400)) throw sendError(err);
+        }
+      }
       try {
         const sent = await api.sendMessage(chatId, message.text, {
           ...options(message),

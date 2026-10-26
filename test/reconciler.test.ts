@@ -106,7 +106,7 @@ describe('reconciler', () => {
 
     expect((await getOrder(testDb.db, id)).status).toBe('delivered');
     expect(mock.state.orders).toHaveLength(2); // nothing bought twice
-    expect(tg.sent.filter((m) => m.text.startsWith('payment confirmed ✅'))).toHaveLength(1);
+    expect(tg.sent.filter((m) => m.text.startsWith('🎉 order'))).toHaveLength(1);
   });
 
   it('recovers paid orders that never started, and leaves held payments alone', async () => {
@@ -153,7 +153,7 @@ describe('reconciler', () => {
 
     await testDb.db
       .update(orderDrafts)
-      .set({ updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) })
+      .set({ updatedAt: new Date('2026-10-25T11:00:00Z') }) // 26 hours before the reconciler's fixed now
       .where(eq(orderDrafts.telegramId, 42));
 
     await reconciler.runOrders();

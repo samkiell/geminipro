@@ -58,6 +58,7 @@ function deps(overrides: { apiKey?: string; logger?: Logger } = {}): FulfilmentD
     facts,
     notify: (alert) => alerts.push(alert),
     logger,
+    confettiEffectId: '5046509860389126442',
     onChange: (orderId) => changed.push(orderId),
     itemRetryDelaysMs: [1, 1],
   };
@@ -67,7 +68,7 @@ const postsFor = (key: string) => mock.orderRequests().filter((r) => r.idempoten
 const linksIn = (text: string | undefined) => text?.match(LINK) ?? [];
 
 describe('fulfil', () => {
-  it('1 link end to end: a paid order becomes delivered with one tap-to-copy link', async () => {
+  it('1 link end to end: a paid order becomes delivered with one tap-to-copy link and confetti', async () => {
     const id = await insertOrder(testDb.db, { quantity: 1 });
     expect(await fulfil(deps(), id)).toBe('delivered');
 
@@ -82,14 +83,14 @@ describe('fulfil', () => {
 
     expect(tg.sent).toHaveLength(1);
     const [message] = tg.sent;
-    expect(message).toMatchObject({ chatId: 42, html: true });
+    expect(message).toMatchObject({ chatId: 42, html: true, messageEffectId: '5046509860389126442' });
     expect(message?.text).toBe(
       [
-        `payment confirmed ✅ order ${order.orderNo}`,
-        'your link, tap to copy:',
+        `🎉 order ${order.orderNo} delivered`,
+        '🔑 tap to copy:',
         `<code>${item?.activationLink}</code>`,
-        "open the browser where you're already signed in to the google account you want it on, paste the link and activate it.",
-        '⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.',
+        "paste it in the browser where you're signed in to the google account you want it on, then activate.",
+        '⚠️ expires soon. no refund if it expires before you activate it.',
         "once it's activated, tap ✅ below and i'll close it here.",
       ].join('\n'),
     );
@@ -113,8 +114,8 @@ describe('fulfil', () => {
 
     const first = tg.sent[0]?.text ?? '';
     expect(linksIn(first)).toEqual([items[0]?.activationLink, items[2]?.activationLink]);
-    expect(first).toContain(`link 1 of 3\n<code>${items[0]?.activationLink}</code>`);
-    expect(first).toContain(`link 3 of 3\n<code>${items[2]?.activationLink}</code>`);
+    expect(first).toContain(`🔑 link 1 of 3, tap to copy:\n<code>${items[0]?.activationLink}</code>`);
+    expect(first).toContain(`🔑 link 3 of 3, tap to copy:\n<code>${items[2]?.activationLink}</code>`);
     expect(first).toContain("the other link is being sorted, we'll send it here.");
 
     mock.clearFailures();
@@ -230,7 +231,8 @@ describe('fulfil', () => {
 
     mock.set({ stock: 10 });
     expect(await fulfil(deps(), id)).toBe('delivered');
-    expect(tg.sent[1]?.text).toContain('your links, tap to copy:');
+    const order = await getOrder(testDb.db, id);
+    expect(tg.sent[1]?.text).toContain(`🎉 order ${order.orderNo} delivered`);
   });
 
   it('a buyer who blocked the bot: needs_attention, alert, links kept for support', async () => {
