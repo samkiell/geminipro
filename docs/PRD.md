@@ -62,19 +62,28 @@ Two separate flows. The bot never moves money between them.
 
 ## 8. Functional requirements
 
-### 8.1 Buyer agent (Groq, tool calling)
+### 8.1 Buyer agent (Groq, one call per message)
 
-- The bot is an agent, not a script. It runs a tool calling loop on Groq (`GROQ_MODEL`, default `openai/gpt-oss-120b`, with fallback models). It reads the buyer's message and recent history (last 10 turns), decides what to do, calls tools, and replies.
-- Tools, all executed by code: `get_price`, `check_availability`, `create_payment_link` (shows the order summary card), `show_history`, `show_order`, `cancel_pending_order`, `escalate_to_support`, `get_owner_info`, `save_lead`. Views are rendered by code; tools return only `{shown: true}` or plain facts. Full spec in `docs/ARCHITECTURE.md`.
+- One model call per free text message at most (Prompt C, the same design as SKDL). The model (`GROQ_MODELS`, best first: qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b) reads a small static prompt, the last 6 messages and a short context block (price, stock, offer, buyer), and returns one JSON decision: an intent (`buy`, `price`, `history`, `show_order`, `proof`, `help`, `owner`, `shop`, `support`, `lead`, `chat`), its details (quantity, order number, topic, lead summary) and a reply of at most 240 characters. Code validates it and carries it out: cards, prices, orders, proof and owner texts are rendered by code, never by the model. Full spec in `docs/ARCHITECTURE.md` section 5.
+- Zero model calls for commands, buttons, the stepper, history navigation, the help hub and the most common messages (greetings, price, buy, my orders, proof questions, help, support), answered from `src/content/`. Repeated general questions are cached for 5 minutes.
+- Proof (8.1A): skeptical buyers get real, blurred screenshots of past activations with a fixed honest text.
 - Agentic behavior: handles multi step requests ("i need 3, how much, can i pay now"), answers questions about the offer from a built in knowledge base (including what happens for people who already have a Google plan, and that the 18 months run from activation), handles trust questions and objections briefly, resumes unfinished orders, sends one follow up nudge for an abandoned payment link, and escalates unclear or problem cases to WhatsApp support.
 - Owner knowledge (from `src/knowledge/owner.ts`, reviewed by samkiel): answers who made it (an AI assistant built by samkiel, never claims to be him, Google or Jio), who samkiel is, his projects and achievements, and whether the shop is legit and where links come from, honestly and briefly, with portfolio, GitHub and LinkedIn buttons. Never reveals the supplier, costs, margins, balance, admin commands or other buyers.
 - Leads: "can you build me a website" saves a lead (3 a day per user) and alerts the owner. Never quotes prices.
 - Light memory: first name, new or returning, past orders, preferred language. Pidgin in, light pidgin out.
-- Hard limits: the agent never sees or writes activation links, never confirms a payment, never calls the reseller, and cannot change the price. Money and delivery are deterministic code. Tool arguments are validated in code (quantity limits, one pending order per user). User text is untrusted.
-- Style: very short, lowercase, casual, no em dashes (stripped in code).
-- Groq's free tier is the budget. Under load or on a rate limit the bot switches at once (no waiting on Groq) to smart scripted replies: it still opens the order card, history, the right help page, or answers price, legit and support questions, in varied wording (english or pidgin), so sales never stop.
+- Hard limits: the agent never sees or writes activation links, never confirms a payment, never calls the reseller, and cannot change the price. Money and delivery are deterministic code. Decisions are validated in code (quantity limits, order ownership, one pending order per user); any intent outside the list, or invalid JSON, gets the scripted reply. User text is untrusted.
+- Style: very short, lowercase (enforced in code), casual, english unless the buyer writes pidgin, no em dashes (stripped in code).
+- Resilience: each model call times out at 6s, at most 2 models are tried per message, a rate limited model is skipped until its reset, 6 model messages per buyer per minute, `LLM_CONCURRENCY` calls at once with a short queue. Otherwise the bot switches at once to smart scripted replies: it still opens the order card, history, the right help page or the proof album, in varied wording (english or pidgin), with [buy] [price] [proof] [support], so sales never stop. More than 5 scripted replies in 5 minutes alerts the owner; the daily summary counts model calls and fallbacks. Groq's free tier is not enough for launch traffic: upgrade the plan before launch.
 - Buyer commands, exactly four: `/start`, `/buy`, `/history`, `/help`. Typed requests like "my orders" or "where is my link" open the history view.
 - Owner side (stretch goal): natural language read only questions ("how much did i sell today", "what's the balance") through an admin tool set. Destructive actions stay explicit commands.
+
+### 8.1A Proof
+
+- Purpose: skeptical buyers get real proof that the offer works.
+- Up to 10 real screenshots of activations from past buyers, emails, names and phone numbers blurred, never edited or generated. They live in `assets/proof/` (seeded into `proof_items` at boot) or are added by an admin with a photo captioned `/addproof`; `/proofs` lists them, `/delproof <n>` removes one.
+- Sent as one album with the caption "real activations from past buyers, personal details hidden", after this exact text: "yes, the offer is real. it is google's official 18 month ai pro offer with jio in india. samkiel gets the activation links through a supplier and resells them, so this shop is not run by google or jio. here are real activations from past buyers 👇". Then [buy now] [whatsapp support].
+- Triggered by "is this real", "proof", "legit", "scam" and similar (no model call), the `proof` intent, [see proof] on the order card and in /help.
+- Honesty: the bot never claims the shop is official or affiliated with Google or Jio, and never claims anything the screenshots do not show.
 
 ### 8.2 Pre-sale checks (before issuing a payment link)
 

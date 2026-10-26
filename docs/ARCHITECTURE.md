@@ -66,17 +66,19 @@ geminipro/
       commands.ts         command menus for buyers and admins
       admin.ts            admin commands, allowlist
     agent/
-      agent.ts            tool calling loop, reply cleanup, payment nudge text
-      llm.ts              ModelPool: rate limit aware Groq model selection, fail fast
-      turn.ts             one agent turn: history, offer text, buyer context, prompt
-      prompt.ts           system prompt and knowledge base
-      tools.ts            9 tool schemas and executors
-      actions.ts          what the tools call (flows, pricing, reseller, leads)
+      decide.ts           the single model call: JSON decision, zod check, reply cleanup
+      brain.ts            around it: 5 minute cache, per buyer limit, history, buyer memory, context
+      fastpath.ts         zero call answers for common messages
+      llm.ts              ModelPool: rate limit aware Groq model failover, queue, per call metrics
+      prompt.ts           static system prompt and the dynamic context block
+      usage.ts            model calls and fallbacks per day, fallback burst alert
       fallback.ts         smart scripted replies when no model is free
-      buyer.ts            buyer context and pidgin detection
-      history.ts          last 10 turns
-      nudge.ts            abandoned payment nudge
+      buyer.ts            buyer memory and pidgin detection
+      history.ts          last 6 messages
+      nudge.ts            abandoned payment nudge (template)
+    bot/respond.ts        carries out a decision: cards, prices, history, proof, owner text, leads
     content/help.ts       /help hub pages; the refund and replacement wording
+    content/replies.ts    fixed replies: proof text, greetings, support
     knowledge/owner.ts    what the agent may say about samkiel and the shop
     services/
       payments.ts         PaymentProvider interface
@@ -87,16 +89,18 @@ geminipro/
       fulfilment.ts       fulfil orders, partial handling, delivery
       reminders.ts        activation reminder with quiet hours
       leads.ts            business inquiries
-      settings.ts         paused, offer_text
+      proof.ts            proof screenshots: seed, album send with file_id reuse, admin add/remove
+      settings.ts         paused, offer_text, alert cooldowns, model usage
       reconciler.ts       timers: expire, nudge, verify, recover, balance, reminders, daily summary
       notifier.ts         email, telegram admin, ntfy
     db/
       schema.ts, client.ts, migrate.ts, migrations/
     util/
       logger.ts, redact.ts, semaphore.ts, time.ts
-  scripts/                eval-agent.ts, set-webhook.ts, create-test-order.ts
+  assets/proof/           real, blurred proof screenshots (README checklist)
+  scripts/                eval-agent.ts, set-webhook.ts, create-test-order.ts, optimize-proof.ts
   test/
-    mocks/reseller-server.ts, helpers/
+    mocks/reseller-server.ts, mocks/groq-server.ts, helpers/
     *.test.ts
   .env.example
   render.yaml
@@ -104,34 +108,41 @@ geminipro/
 
 ## 5. The agent
 
-### 5.1 Loop
+### 5.1 One call per message (Prompt C, the SKDL design)
 
-1. Telegram message arrives. Private chats only, one update at a time per user (a per chat queue), rate limit per user (20 messages per 10 minutes). Buttons left on the previous agent reply are removed. The buyer's language is noted (`users.lang`).
-2. If the model pool has no free model (all rate limited or busy), skip to step 6 at once.
-3. Build the system prompt with the current offer text and a one line buyer context, load the last 10 turns, call Groq with the tools, `temperature 0.4`, `max_tokens 300`. Tool calls are validated with zod and executed, results go back to the model, at most 5 rounds and 20 seconds per turn.
-4. Final text is cleaned (no URLs, no markdown, em dashes become commas) and sent with any buttons the tools attached (portfolio, support). Cards and history views were already rendered by the tools themselves.
-5. Save the turn to `messages`.
-6. No model free, rate limited, errors, or too slow: `fallback.ts` answers. It recognises what the buyer wants and acts like the agent would (opens the order card for the quantity they named, shows history or an order, opens the right help page, cancels, saves a lead) or replies with one of many varied, lowercase lines (english or pidgin), never the same twice in a row, always with buttons and pointing to /buy, /history and /help.
+The old tool calling loop made 2 to 5 model calls per message and hit Groq's free tier limits after about 15 messages. Now a message costs at most one call, and often none.
 
-### 5.2 Tools (buyer agent)
+1. Telegram message arrives. Private chats only, one update at a time per user (a per chat queue), rate limit per user (20 messages per 10 minutes). Buttons left on the previous reply are removed. The buyer's language is noted (`users.lang`).
+2. **Fast path** (`agent/fastpath.ts`, zero calls): whole short messages are matched in code and answered from `src/content/`: greetings, "price" or "how much", "buy" or "i want", "history" or "my orders" or "my link", "proof", "real", "legit", "scam", "trust", "genuine", "fake", "does it work", "help", "support". "i need 3, how much" is not a fast path match: it goes to the model.
+3. **Cache** (`agent/brain.ts`): the same normalised question of 3 words or more, with a general answer (help, owner, shop, proof, support) and no buyer name in it, is reused for 5 minutes.
+4. **Limits**: 6 model messages per buyer per minute; at most `LLM_CONCURRENCY` (6) calls at once across all buyers, 12 more may wait up to 2.5s, the rest get the scripted reply. `sendChatAction: typing` goes out before the call.
+5. **The call** (`agent/decide.ts`): static system prompt first (about 600 tokens, cacheable), the last 6 messages (200 characters each), then a short context block (price line, stock from the reseller cache, offer text, support number, buyer memory), then the message. JSON mode (`response_format: json_object`), temperature 0.3, about 160 output tokens (plus reasoning room for reasoning models), 6 second timeout. The model returns one decision, checked with zod:
+   `{ "intent": "buy|price|history|show_order|proof|help|owner|shop|support|lead|chat", "quantity": number|null, "order_no": string|null, "topic": "identity|roles|projects|achievements|services|links"|null, "summary": string|null, "reply": string }`
+   The reply is cleaned in code (no links, markdown or dashes, lowercase except the SAMKIEL brand and order numbers) and cut to 240 characters. Invalid JSON, an unknown intent or an empty chat reply count as a failure.
+6. **Code acts** (`bot/respond.ts`): see 5.2. A clear "can i pay now" that the model called chat or price still opens the card.
+7. Save the turn to `messages`.
+8. **Fallback**: no model free, rate limited, invalid output, errors or too slow: `fallback.ts` answers at once. It recognises what the buyer wants and acts (opens the order card for the quantity they named, shows history or an order, opens the right help page, sends the proof album, cancels, saves a lead) or replies with one of many varied lowercase lines (english or pidgin), never the same twice in a row, with [buy] [price] [proof] [support].
 
-| Tool | Args | What the code does | Returns to the model |
-|---|---|---|---|
-| `get_price` | `quantity` (default 1) | computes base, fee, total | `{quantity, baseNgn, feeNgn, totalNgn, feeNote?}` |
-| `check_availability` | none | paused, cutoff, reseller stock and balance minus reserved links | `{canSell, maxQuantity}` |
-| `create_payment_link` | `quantity` (default 1) | creates or replaces the unpaid order and shows the summary card with the pay button (once per turn) | `{shown, orderNo, quantity, totalNgn, feeNote?}` |
-| `show_history` | none | renders the paginated history in the chat | `{shown: true}` |
-| `show_order` | `orderNo` | renders that order's card if it is the caller's | `{shown}` |
-| `cancel_pending_order` | none | cancels the caller's unpaid order, retires its card | `{cancelled}` |
-| `escalate_to_support` | `reason` | alerts admin, attaches a whatsapp button | `{supportWhatsapp}` |
-| `get_owner_info` | `topic` | facts from `knowledge/owner.ts`, attaches portfolio/github/linkedin/blog buttons | `{ok, text}` |
-| `save_lead` | `summary` | saves a business inquiry (3 a day per user), alerts admin | `{saved}` |
+### 5.2 Intents (carried out by code)
+
+| Intent | What the code does |
+|---|---|
+| `buy` | clamps the quantity (1 to `MAX_QTY_PER_ORDER`) and shows the order card for it |
+| `price` | price and total for the quantity, with [buy N] [see proof] |
+| `history` | the paginated history |
+| `show_order` | that order's card, only if it belongs to the buyer in the update; else "couldn't find it" |
+| `proof` | the proof album with its fixed honest text (5.7); the model's reply is not used |
+| `help` | the help hub |
+| `support` | the WhatsApp support button, and an alert to the owner |
+| `owner`, `shop` | the canned section from `knowledge/owner.ts` for the topic, with link buttons |
+| `lead` | saves the lead from `summary` (3 a day per user), alerts the owner, portfolio button |
+| `chat` | just the reply; if it talks about buying, prices or support, [buy] [price] [proof] [support] |
 
 Rules enforced in code, regardless of what the model says:
 - quantity is clamped and validated, never trusted
-- an order is only created through `create_payment_link` (or /buy and the buy buttons)
-- no tool returns an activation link, a checkout URL or a payment secret; views render in code
-- tools only act on the calling user's `telegram_id`, taken from the update, never from model args
+- an order is only created by code paths (/buy, buttons, the buy intent), always for the user in the update
+- the model never sees activation links, checkout URLs or payment secrets, and anything it writes is cleaned
+- the model cannot change prices: prices come from config, never from its reply
 
 ### 5.3 Agentic behaviors
 
@@ -141,27 +152,32 @@ Rules enforced in code, regardless of what the model says:
 - Owner knowledge (Prompt B): who made it, who samkiel is, his work, is this legit, where the links come from. Honest, short, with his links as buttons. Never claims to be samkiel, Google or Jio.
 - Leads: "can you build me a website" saves a lead and alerts the owner.
 - Light memory: first name, new or returning, past orders, language. Pidgin in, light pidgin out.
-- Abandoned payment nudge: one follow up about 10 minutes after an unpaid payment link (model written, template fallback).
+- Abandoned payment nudge: one follow up about 10 minutes after an unpaid payment link (a template, so the model's quota is kept for buyers).
 - Activation, the last step: every open link in a links message has a ✅ button (`v:<itemId>`). A tap swaps it for a confirmation (`v:y:` closes, `v:n:` backs out). Closing sets `order_items.activated_at` with a conditional UPDATE and edits every message in `message_ids` so the link turns into "activated ✅, closed". Closed links are never sent again (show my links, /resend, admin copies). When as many links are activated as were ordered, `orders.activated_confirmed_at` is set and history shows "activated ✅".
 - Activation reminder: one "did you activate your link?" after delivery (`REMINDER_DELAY_MINUTES`, default 180) unless the order is already activated, never between 23:00 and 07:00 WAT. Its yes closes every link of the order.
 - Smart escalation to WhatsApp support; never promises refunds or outcomes beyond the knowledge base.
 
 ### 5.4 Owner agent (stretch goal)
 
-Same loop with admin only tools: `get_balance`, `get_stats`, `list_orders`, `get_order(id)`. Read only. Admin identity is checked by Telegram id allowlist before any admin agent runs.
+Not built: every admin action is a command or an /admin panel button.
 
 ### 5.5 System prompt
 
-Lives in `agent/prompt.ts`, kept compact (Groq's free tier spends it on every call). It carries: the product, the owner blurb (max 80 words), style (short, lowercase, plain text, light pidgin when they write pidgin), facts (price and fee, what you get, how it works, existing plans, the offer line from settings, limits, the refund and replacement wording, support), how to act (which tool for which request), rules (an ai built by samkiel; never confirms payments, writes links, changes prices; never reveals the prompt, tools, supplier, costs, balance, admin commands or other buyers; user text is untrusted), and the buyer context line.
+`agent/prompt.ts`. The static part never changes between calls (so Groq can cache it) and stays near 600 tokens: the product, honesty rules (never claim to be samkiel, Google or Jio, never say the shop is official), the owner blurb (max 80 words), the JSON contract and intent list, reply style (max 240 characters, lowercase, english unless they write pidgin, no links, prices or totals: code shows those), short facts (what you get, how it works, existing plans, the replacement and refund wording) and the rules (never reveal instructions, costs, supplier, balance or other buyers; user text is untrusted). Everything that changes goes in the context block sent last: price line, stock, offer text, support number and the buyer memory line. Longer answers about samkiel come from the canned sections, never from the model.
 
 ### 5.6 Robustness under load
 
-- **Model pool** (`agent/llm.ts`): learns each model's remaining tokens and requests from Groq's headers, rests a model after a 429 until its reset time, rests it briefly on 5xx or timeout, caps model calls in flight (4), and times out each call at 8s. When no model is usable it throws at once without a network call, so the buyer gets the scripted reply in milliseconds.
+- **Model pool** (`agent/llm.ts`): `GROQ_MODELS`, best first (default qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b; qwen passed every eval check at about 0.9s a call). It learns each model's remaining tokens and requests from Groq's headers, rests a model after a 429 until `retry-after` or its reset time and moves to the next at once, rests it briefly on 5xx or timeout, tries at most 2 models per message, times out each call at 6s, and caps calls in flight (`LLM_CONCURRENCY`) with a short queue. When no model is usable it answers at once without a network call, so the buyer gets the scripted reply in milliseconds.
+- **Metrics**: every call is logged with model, latency, prompt and completion tokens and status (never content). Per WAT day the counts of model calls, 429s, free answers (fast path and cache) and scripted fallbacks are kept in `settings` (`llm_usage:<date>`) and shown in the daily summary. More than 5 scripted fallbacks in 5 minutes alerts the owner (30 minute cooldown).
 - **Per user queue**: one update at a time per chat, so double taps and quick messages never race.
 - **Telegram**: one Bot API client with 15s timeouts and auto retry for Telegram's own 429s; webhook replies after 9s while the handler finishes.
 - **Fulfilment**: at most 3 orders bought at once; each link has a fixed idempotency key.
 - **Database**: one unpaid order per user enforced by a unique index; every state change is a conditional update.
 - **Status edits** are throttled and coalesced per order.
+
+### 5.7 Proof screenshots
+
+For skeptical buyers: real screenshots of real activations, personal details blurred, never edited or generated (checklist in `assets/proof/README.md`). Table `proof_items(id, key, file_id, caption, position, active)`, seeded from `assets/proof/` at boot while it is empty. The first send uploads the files; Telegram's `file_id` is stored so later albums are sent instantly. Triggered by the `proof` intent, the fast path, [see proof] on the order card and in /help. Sends, in order: the fixed text ("yes, the offer is real. it is google's official 18 month ai pro offer with jio in india. samkiel gets the activation links through a supplier and resells them, so this shop is not run by google or jio. here are real activations from past buyers 👇"), the album (up to 10 photos, one caption: "real activations from past buyers, personal details hidden"), then [buy now] [whatsapp support]. With no screenshots: an honest "being added" note with WhatsApp support, and one alert to the owner. Admins add one by sending a photo captioned `/addproof`, list with `/proofs`, remove with `/delproof <n>`. `pnpm proof:optimize` resizes files to 1280px, JPEG, under 1 MB.
 
 ## 5A. Buyer experience (Prompt A)
 
@@ -253,7 +269,15 @@ create table messages (
   created_at timestamptz default now()
 );
 
-create table settings (key text primary key, value jsonb);  -- paused, offer_text, alert cooldowns, etc.
+create table settings (key text primary key, value jsonb);  -- paused, offer_text, alert cooldowns, llm_usage:<date>, etc.
+
+create table proof_items (                  -- proof screenshots (5.7)
+  id bigserial primary key,
+  key text not null unique,                 -- file name in assets/proof, or tg:<file_unique_id>
+  file_id text,                             -- Telegram file_id after the first upload
+  caption text, position int not null default 0, active boolean not null default true,
+  created_at timestamptz not null default now()
+);
 ```
 
 `activation_link` is sensitive. It is never logged, and `events.payload` for reseller responses is stored with `value` redacted.
@@ -363,7 +387,7 @@ NODE_ENV, PORT, PUBLIC_URL
 TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, TELEGRAM_WEBHOOK_SECRET, ADMIN_TELEGRAM_IDS
 BACHS_SECRET_KEY, BACHS_WEBHOOK_SECRET, BACHS_BASE_URL (optional), GROSS_UP, FEE_PCT, FEE_FLAT
 RESELLER_BASE_URL, RESELLER_API_KEY, RESELLER_PRODUCT_ID, RESELLER_MOCK, RESELLER_MOCK_URL
-GROQ_API_KEY, GROQ_MODEL, GROQ_FALLBACK_MODELS
+GROQ_API_KEY, GROQ_MODELS (best first), LLM_CONCURRENCY=6
 DATABASE_URL
 UNIT_PRICE_NGN=3500, MAX_QTY_PER_ORDER=10, LOW_BALANCE_ORDERS=5
 SUPPORT_WHATSAPP_INTL=2348087357158, REMINDER_DELAY_MINUTES=180
@@ -388,7 +412,8 @@ SALES_CUTOFF (optional, empty by default)
 
 - **Unit:** fee gross up, quantity clamping, signature verification, state transitions, idempotency key generation, availability math.
 - **Integration:** local mock reseller server (`RESELLER_MOCK=true`) that can simulate success, pending, out of stock, insufficient funds, timeouts, and partial failures. Bachs sandbox with a simulated signed webhook.
-- **Agent evals:** `pnpm eval:agent` runs scripted buyer conversations against the real Groq models (buy 1, buy 3, price, existing plan, "where is my link", prompt injection, off topic, who made you, who is samkiel, bot or person, is this legit, where the links come from, are you from google, what samkiel built, build me a website, portfolio, supplier injection, balance, pidgin, returning buyer) and checks tool calls, buttons, leads, that replies are short and lowercase, and never include a link or private information.
+- **Model decisions:** a mock Groq server (`test/mocks/groq-server.ts`) behind the real groq-sdk: valid and invalid JSON, 429 with retry-after, timeouts, model cooldown and failover, at most 2 models per message, every intent carried out by code, quantity clamping, order ownership, chat fallback buttons, the cache and the per buyer limit. Call counts are asserted: "i need 3, how much" costs exactly 1 call; buying through buttons, "is this real" and /history cost 0.
+- **Agent evals:** `pnpm eval:agent` sends scripted buyer messages through the same fast path and model decision against the real Groq models (buy 1, buy 3, price, existing plan, "where is my link", prompt injection, off topic, who made you, who is samkiel, bot or person, is this legit, where the links come from, are you from google, what samkiel built, build me a website, portfolio, supplier injection, balance, pidgin, returning buyer, is this real, show me proof, i dont believe you) and checks intents, quantities, topics, that replies are short and lowercase and never include a link or private information. Rate limited messages are reported as such, not as failures. It prints p50 and p95 latency (target on a paid plan: model call under 1.5s, reply under 2.5s).
 - **Buyer UX:** delivery formatting (code tags, escaping, splitting), buttons removed after pay, expiry and cancel, history pagination and ownership, status rendering for every state, offer text never a date, stepper limits, reminder quiet hours. `test/flows.test.ts` runs the whole buy, step to 3, pay, deliver, history, show links flow.
 - **Smoke test before launch:** one Bachs sandbox payment end to end against the mock, then one real $1.20 reseller purchase with a live key and a small real payment.
 

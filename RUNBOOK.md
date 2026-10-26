@@ -40,7 +40,11 @@ Check it promptly. If it failed when used promptly, `/replace GP-1042` buys one 
 
 ## Groq is down or rate limited
 
-Nothing to do. The bot switches to scripted replies by itself and keeps selling through the order card, `/buy` and buttons. It goes back to the agent when Groq has room again.
+The bot switches to scripted replies by itself and keeps selling through the order card, `/buy`, buttons and proof. It goes back to the model when Groq has room again. You get an alert when more than 5 buyers in 5 minutes got scripted replies, and the daily summary shows model calls, 429s and fallbacks. If it keeps happening: upgrade the Groq plan, and check the limits page in the Groq console (each model in `GROQ_MODELS` has its own limits).
+
+## Proof screenshots
+
+Add one by sending the photo to the bot with the caption `/addproof` (real, personal details blurred). `/proofs` lists the album in order, `/delproof 2` removes the second. Files in `assets/proof/` are only read at boot while the album is empty.
 
 ## Render is asleep or restarting
 

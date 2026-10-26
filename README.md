@@ -57,7 +57,8 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 | `pnpm db:migrate` | apply pending migrations |
 | `pnpm mock:reseller` | run the mock reseller API on port 4010 (the app already runs it itself when `RESELLER_MOCK=true`) |
 | `pnpm order:test [qty] [telegramId]` | sandbox only: create an order and print its Bachs checkout link; `--cancel` cancels it |
-| `pnpm eval:agent [names]` | run scripted buyer conversations against the real Groq models and check tool use and reply rules |
+| `pnpm eval:agent [names]` | send scripted buyer messages through the fast path and the real Groq models; checks decisions and replies, prints p50/p95 latency |
+| `pnpm proof:optimize` | resize and compress the screenshots in `assets/proof/` (1280px, JPEG, under 1 MB) |
 | `pnpm webhook:set` | point Telegram at `PUBLIC_URL`, register the command menus, print the Bachs webhook URL |
 
 ## Test mode and live mode
@@ -134,7 +135,10 @@ Every link is bought from the reseller at about $1.20. Top up on the reseller's 
 - **Activation, the last step**: each link has a ✅ button. After activating, the buyer taps it and confirms; the link is closed in every message that showed it and never shown again. /stats counts activations.
 - **History**: orders as buttons (GP-1042 · 2 links · 26 oct · delivered ✅), each with its card and [show my links].
 - **Buttons disappear** once their job is done; stale taps say "this button has expired".
-- **When Groq is rate limited** (free tier), the bot answers instantly with scripted replies that still open the card, history and help pages, in english or pidgin.
+- **One model call per message at most**: the model only picks an intent and writes a short reply, code shows everything else. Greetings, "how much", "buy", "my orders", "is this real", "help" and "support" cost no call at all. When Groq is rate limited, the bot answers instantly with scripted replies that still open the card, history, help pages and proof, in english or pidgin.
+- **Proof**: "is this real" gets a fixed honest text and an album of real activation screenshots (see below).
+
+> Groq's free tier (about 8,000 tokens a minute per model) is not enough for launch traffic: one call costs about 750 tokens, so roughly 10 messages a minute per model. Upgrade the Groq plan before launch and check its limits page in the Groq console.
 
 Admins (ids in `ADMIN_TELEGRAM_IDS`) also get `/admin`, `/balance`, `/stats`, `/allorders`, `/order`, `/resend`, `/replace`, `/pause`, `/resume`, `/offertext`, `/leads`. Nobody else sees or can run them. `/admin` opens a panel with a button for every one of them: orders open with a tap, "find an order" and "change offer text" ask for a reply, and replace asks to confirm because it costs money. Run `pnpm webhook:set` to register both menus.
 
@@ -145,7 +149,7 @@ The offer line ("offer ending very soon") is a setting, not code: change it with
 Every alert goes out at once to email (Resend, from `ALERT_EMAIL_FROM` to `ALERT_EMAIL`), to each admin's Telegram chat, and to the ntfy topic in `NTFY_TOPIC` (install the ntfy app and subscribe to it). A channel that fails is logged and the others still go. Alerts never contain a link.
 
 - **Always, per order**: a paid order that could not be fulfilled, a payment held for review.
-- **At most once per 30 minutes per trigger** (remembered across restarts): low stock, low reseller balance (fewer than `LOW_BALANCE_ORDERS` links left), reseller key rejected, bad webhook signatures, Groq unavailable, fee setup mismatch, service restarted.
+- **At most once per 30 minutes per trigger** (remembered across restarts): low stock, low reseller balance (fewer than `LOW_BALANCE_ORDERS` links left), reseller key rejected, bad webhook signatures, more than 5 scripted replies in 5 minutes (Groq rate limited), no proof screenshots yet, fee setup mismatch, service restarted.
 - **Daily summary at 21:00 WAT**: today's orders, links and revenue, failures, the reseller balance and stock.
 
 The reconciler runs at boot and then every 30 seconds (balance every 5 minutes). It expires unpaid orders and retires their cards, asks Bachs about unpaid checkouts up to a day old in case a webhook was lost, finishes paid orders that never started or whose fulfilment died mid way (the reseller idempotency keys make that safe), retries paid orders stuck for lack of balance or stock every 10 minutes, and sends payment nudges and activation reminders.
@@ -158,7 +162,9 @@ samkiel must read these two files line by line; the bot says what they say.
 - [ ] `src/content/help.ts`: how it works, what you get, activation steps, existing plan answer, and the refund and replacement policy are exactly what you will honour.
 - [ ] `src/agent/prompt.ts` and `src/bot/views.ts`: the price, fee wording and support number read right.
 - [ ] `/offertext` set to what you want buyers to see.
-- [ ] `pnpm eval:agent` passes (run it twice; it costs a few Groq calls).
+- [ ] `pnpm eval:agent` passes (it costs about 15 Groq calls).
+- [ ] Proof screenshots in `assets/proof/` (or sent with `/addproof`): every one real, unedited apart from blurring, with emails, names and phone numbers blurred. Run `pnpm proof:optimize`. See `assets/proof/README.md`.
+- [ ] Groq plan upgraded from the free tier (see above).
 
 ## Changing the database schema
 
