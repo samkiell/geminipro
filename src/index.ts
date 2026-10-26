@@ -218,6 +218,7 @@ async function main(): Promise<void> {
     usage,
     saveLead: (telegramId, username, summary) => saveLead(db, notify, { telegramId, username, summary }),
     notify,
+    adminIds: config.ADMIN_TELEGRAM_IDS,
     registerAdmin: (b) =>
       registerAdmin(b, {
         db,

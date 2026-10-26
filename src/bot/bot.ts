@@ -39,6 +39,8 @@ export interface BotDeps {
   usage?: { free: () => void; fallback: (reason: string) => void };
   /** Per user. Default 20 messages per 10 minutes (docs/ARCHITECTURE.md 5.1). */
   rateLimit?: { max: number; windowMs: number };
+  /** Never rate limited: the owner must always be able to run the shop. */
+  adminIds?: readonly number[];
   /** Admin commands, registered before the buyer ones (they never reach non admins). */
   registerAdmin?: (bot: Bot) => void;
   /** Owner alerts (support requests). */
@@ -123,7 +125,7 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
     await next();
   });
 
-  bot.use(rateLimiter(deps.rateLimit ?? { max: 20, windowMs: 10 * 60_000 }, port));
+  bot.use(rateLimiter(deps.rateLimit ?? { max: 20, windowMs: 10 * 60_000 }, port, deps.adminIds ?? []));
 
   deps.registerAdmin?.(bot);
 
@@ -338,14 +340,14 @@ async function storedLang(db: Db, telegramId: number): Promise<Lang> {
 
 /** In memory, per process: fine for one instance. Warns once per window, then stays quiet.
  * Callbacks never count (Prompt D §1). Only free text counts. */
-function rateLimiter({ max, windowMs }: { max: number; windowMs: number }, port: TelegramPort) {
+function rateLimiter({ max, windowMs }: { max: number; windowMs: number }, port: TelegramPort, exempt: readonly number[]) {
   const hits = new Map<number, number[]>();
   const warned = new Map<number, number>();
   return async (ctx: Context, next: () => Promise<void>) => {
     const id = ctx.from?.id;
     if (id === undefined) return next();
-    // Callbacks never count toward the rate limit and never trigger the warning.
-    if (ctx.callbackQuery) return next();
+    // Callbacks never count toward the rate limit and never trigger the warning; admins never do.
+    if (ctx.callbackQuery || exempt.includes(id)) return next();
     const now = Date.now();
     const recent = (hits.get(id) ?? []).filter((t) => now - t < windowMs);
     recent.push(now);

@@ -352,6 +352,13 @@ describe('chat: one model call at most, often none', () => {
     expect(tg.textsTo(BUYER).filter((t) => t.startsWith("you're sending a lot"))).toHaveLength(1);
   });
 
+  it('never rate limits an admin', async () => {
+    const bot = makeBot({ rateLimit: { max: 2, windowMs: 60_000 }, adminIds: [BUYER] });
+    for (const text of ['one more message', 'two more messages', 'three more', 'four more']) await bot.handleUpdate(message(text));
+    expect(modelCalls()).toBe(4);
+    expect(tg.textsTo(BUYER).some((t) => t.startsWith("you're sending a lot"))).toBe(false);
+  });
+
   it('ignores group chats', async () => {
     await makeBot().handleUpdate(message('hello', { chatType: 'group' }));
     expect(tg.sent).toHaveLength(0);

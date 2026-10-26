@@ -65,11 +65,9 @@ export async function addProof(db: Db, fileId: string, fileUniqueId: string): Pr
   return row ? 'added' : 'exists';
 }
 
-/** Removes the n-th item of the album as /proofs lists it (1-based). */
-export async function removeProof(db: Db, n: number): Promise<ProofItem | undefined> {
-  const item = (await activeProof(db))[n - 1];
-  if (!item) return undefined;
-  await db.update(proofItems).set({ active: false }).where(eq(proofItems.id, item.id));
+/** Deletes the screenshot with this id (as /proofs shows it), for good: it can be added again later. */
+export async function removeProof(db: Db, id: number): Promise<ProofItem | undefined> {
+  const [item] = await db.delete(proofItems).where(eq(proofItems.id, id)).returning();
   return item;
 }
 

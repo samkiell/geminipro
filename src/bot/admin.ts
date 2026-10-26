@@ -148,14 +148,27 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
       .join('\n');
   }
 
-  async function proofsView(): Promise<string> {
+  /** The album by id (ids never shift when one is removed), with a remove button for each. */
+  async function proofsView(note?: string): Promise<OutMessage> {
     const items = await activeProof(db);
-    if (items.length === 0) return 'no proof screenshots yet. send a photo with the caption /addproof, or add files to assets/proof/.';
-    return [
-      `proof album (${items.length} of ${MAX_PROOF}), in order:`,
-      ...items.map((p, i) => `${i + 1}. ${p.key.startsWith('tg:') ? 'sent in telegram' : p.key}${p.fileId ? '' : ' (not uploaded yet)'}`),
-      'remove one with /delproof <n>.',
-    ].join('\n');
+    const head = note ? [note] : [];
+    if (items.length === 0) {
+      return { text: [...head, 'no proof screenshots yet. send a photo with the caption /addproof.'].join('\n'), keyboard: BACK };
+    }
+    return {
+      text: [
+        ...head,
+        `proof album (${items.length} of ${MAX_PROOF}), in order:`,
+        ...items.map((p) => `#${p.id} ${p.key.startsWith('tg:') ? 'sent in telegram' : p.key}${p.fileId ? '' : ' (not uploaded yet)'}`),
+        'tap one to remove it, or send /delproof <id>.',
+      ].join('\n'),
+      keyboard: [...items.map((p) => [{ text: `🗑 remove #${p.id}`, data: `ad:pd:${p.id}` }]), ...BACK],
+    };
+  }
+
+  async function deleteProof(id: number): Promise<OutMessage> {
+    const removed = Number.isInteger(id) && id > 0 ? await removeProof(db, id) : undefined;
+    return proofsView(removed ? `removed #${id}.` : `there is no screenshot #${id}.`);
   }
 
   async function offerView(): Promise<OutMessage> {
@@ -384,17 +397,16 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
       text: {
         added: `added. the album now has ${(await activeProof(db)).length} of ${MAX_PROOF}. check it with /proofs.`,
         exists: 'that screenshot is already in the album.',
-        full: `the album is full (${MAX_PROOF}). remove one with /delproof <n> first.`,
+        full: `the album is full (${MAX_PROOF}). remove one with /proofs first.`,
       }[result],
     });
   });
   admin.command('proofs', async (ctx) => {
-    await reply(ctx, { text: await proofsView() });
+    await reply(ctx, await proofsView());
   });
   admin.command('delproof', async (ctx) => {
-    const n = Number(ctx.match.trim());
-    const removed = Number.isInteger(n) && n > 0 ? await removeProof(db, n) : undefined;
-    await reply(ctx, { text: removed ? `removed ${n}. ${await proofsView()}` : 'which one? see /proofs, then /delproof 2' });
+    const arg = ctx.match.trim().replace(/^#/, '');
+    await reply(ctx, arg ? await deleteProof(Number(arg)) : await proofsView('which one? tap it below, or send /delproof <id>.'));
   });
 
   // Replies to the panel's "find an order" and "change offer text" prompts.
@@ -435,13 +447,14 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
       if (arg === 'orders') return show(await ordersView());
       if (arg === 'leads') return show({ text: await leadsView(), keyboard: BACK });
       if (arg === 'offer') return show(await offerView());
-      if (arg === 'proofs') return show({ text: await proofsView(), keyboard: BACK });
+      if (arg === 'proofs') return show(await proofsView());
       if (arg === 'pause' || arg === 'resume') {
         await setPaused(db, arg === 'pause');
         return show({ text: arg === 'pause' ? 'sales paused.' : 'sales are on again.', keyboard: BACK });
       }
       return;
     }
+    if (kind === 'pd') return show(await deleteProof(Number(arg)));
     if (kind === 'ask') {
       if (arg === 'order') await port.send(chat, { text: ASK.order, forceReply: 'GP-1042' });
       if (arg === 'offer') await port.send(chat, { text: ASK.offer, forceReply: await getOfferText(db) });

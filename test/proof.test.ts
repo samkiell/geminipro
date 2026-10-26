@@ -126,9 +126,20 @@ describe('proof screenshots', () => {
     ]);
     expect((await activeProof(testDb.db)).map((p) => p.fileId)).toEqual(['big-u1', 'big-u2']);
 
+    await bot.handleUpdate(command(ADMIN, '/proofs'));
+    const list = tg.sent.at(-1);
+    expect(list?.text).toContain('#1 sent in telegram\n#2 sent in telegram');
+    expect(tg.buttons(list?.id).map((b) => b.text)).toEqual(['🗑 remove #1', '🗑 remove #2', '‹ panel']);
+
     await bot.handleUpdate(command(ADMIN, '/delproof 1'));
-    expect(tg.textsTo(ADMIN).at(-1)).toContain('removed 1. proof album (1 of 10)');
+    expect(tg.textsTo(ADMIN).at(-1)).toContain('removed #1.\nproof album (1 of 10)');
     expect((await activeProof(testDb.db)).map((p) => p.fileId)).toEqual(['big-u2']);
+    // Ids do not shift: #2 is still #2, and a wrong id says so.
+    await bot.handleUpdate(command(ADMIN, '/delproof 1'));
+    expect(tg.textsTo(ADMIN).at(-1)).toContain('there is no screenshot #1.');
+    // Removed for good, so the same screenshot can be added again.
+    await bot.handleUpdate(photo(ADMIN, '/addproof', 'u1'));
+    expect(tg.textsTo(ADMIN).at(-1)).toBe('added. the album now has 2 of 10. check it with /proofs.');
   });
 });
 

@@ -58,7 +58,7 @@ The bot switches to scripted replies by itself and keeps selling through the ord
 
 ## Proof screenshots
 
-Add one by sending the photo to the bot with the caption `/addproof` (real, personal details blurred). `/proofs` lists the album in order, `/delproof 2` removes the second. Files in `assets/proof/` are only read at boot while the album is empty.
+Add one by sending the photo to the bot with the caption `/addproof` (real, personal details blurred). `/proofs` lists the album by id with a 🗑 button under each; tap one, or send `/delproof 3` to remove #3 for good. Ids never shift. Files in `assets/proof/` are only read at boot while the album is empty.
 
 ## Render is asleep or restarting
 
