@@ -213,7 +213,7 @@ State changes are persisted before external calls. A reconciliation job runs on 
 ## 14. Remaining details to confirm during build
 
 1. Verify with one real buyer who already has a Google plan how activation behaves. The bot's answer about existing subscriptions follows the owner's description and should be checked.
-2. Alert email address (assumed hello@samkiel.dev).
+2. Alert email: sent from hello@samkiel.dev (verified in Resend) to ezekiel.samuel@samkiel.tech.
 3. Bachs `fee_preference`: `customer_pays` (Bachs adds the fee, `GROSS_UP=false`) or `org_pays` (the bot grosses up, `GROSS_UP=true`). The live account was on `org_pays` on 26 Oct.
 4. `MAX_QTY_PER_ORDER` (default 10).
 

@@ -87,6 +87,16 @@ Admins (ids in `ADMIN_TELEGRAM_IDS`) also get `/admin`, `/balance`, `/stats`, `/
 
 The offer line ("offer ending very soon") is a setting, not code: change it with `/offertext last 50 links left`. Buyer facing text never states an end date.
 
+## Alerts and the reconciler
+
+Every alert goes out at once to email (Resend, from `ALERT_EMAIL_FROM` to `ALERT_EMAIL`), to each admin's Telegram chat, and to the ntfy topic in `NTFY_TOPIC` (install the ntfy app and subscribe to it). A channel that fails is logged and the others still go. Alerts never contain a link.
+
+- **Always, per order**: a paid order that could not be fulfilled, a payment held for review.
+- **At most once per 30 minutes per trigger** (remembered across restarts): low stock, low reseller balance (fewer than `LOW_BALANCE_ORDERS` links left), reseller key rejected, bad webhook signatures, Groq unavailable, fee setup mismatch, service restarted.
+- **Daily summary at 21:00 WAT**: today's orders, links and revenue, failures, the reseller balance and stock.
+
+The reconciler runs at boot and then every 30 seconds (balance every 5 minutes). It expires unpaid orders and retires their cards, asks Bachs about unpaid checkouts up to a day old in case a webhook was lost, finishes paid orders that never started or whose fulfilment died mid way (the reseller idempotency keys make that safe), retries paid orders stuck for lack of balance or stock every 10 minutes, and sends payment nudges and activation reminders.
+
 ## Review before launch
 
 samkiel must read these two files line by line; the bot says what they say.

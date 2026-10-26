@@ -1,6 +1,14 @@
 # Runbook
 
-Short answers for running the shop. Admin commands work only in an admin's own chat with the bot.
+Short answers for running the shop. Admin commands work only in an admin's own chat with the bot. `/admin` opens a panel with buttons for the common ones.
+
+## Alerts
+
+Alerts arrive by email, in your Telegram chat with the bot, and on ntfy, all at once (see the README for the list). The same system alert (low balance, rate limits...) comes at most once every 30 minutes, so silence after an alert does not mean it is fixed: check with `/balance` or `/stats`. Order alerts come every time. The daily summary arrives at 21:00 WAT.
+
+## How sales are going
+
+`/stats` shows today and all time (orders, links, revenue), plus failures, orders in progress and orders waiting for payment. `/leads` lists the latest people who asked samkiel to build something.
 
 ## Change the offer line
 
@@ -18,7 +26,7 @@ Short answers for running the shop. Admin commands work only in an admin's own c
 
 `/allorders` lists the last 10; `/order GP-1042` shows one.
 
-- **Paid, nothing bought** (balance, stock or supplier trouble): top up or wait for stock; it is retried automatically.
+- **Paid, nothing bought** (balance, stock or supplier trouble): top up or wait for stock; it is retried automatically every 10 minutes.
 - **Buyer blocked the bot**: the links are saved. Ask them to unblock, then `/resend GP-1042`, or send the links by WhatsApp.
 - **Payment held** (amount or currency did not match): check the payment in the Bachs dashboard before doing anything. Do not fulfil until it is clear.
 

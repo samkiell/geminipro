@@ -321,8 +321,9 @@ fulfil(orderId):
 
 - `awaiting_payment` past `expires_at`: mark `expired` and retire its card; before that, if unpaid after ~10 minutes and `nudge_sent=false`, send the single nudge.
 - Orders still `awaiting_payment` or `expired` for up to 24 hours: fetch the Bachs checkout to catch missed webhooks.
-- `paid`, `partial`, or `fulfilling` with expired lease: run `fulfil`. Paid `needs_attention` orders are retried less often (after a top up they complete on their own).
-- Balance check every 5 minutes: alert if below threshold (with a cooldown so alerts are not spammed).
+- `paid`, `partial`, or `fulfilling` with expired lease: run `fulfil`. Paid `needs_attention` orders are retried every 10 minutes (after a top up they complete on their own), except deliveries blocked by the buyer, which wait for `/resend`.
+- Balance check every 5 minutes: alert if fewer than `LOW_BALANCE_ORDERS` links are left by stock or by balance, after subtracting units promised to open orders (with a cooldown so alerts are not spammed).
+- Each job is isolated (one failing never stops the others) and a run waits for the fulfilments it started, so ticks never overlap.
 - Activation reminders (quiet hours 23:00 to 07:00 WAT) and the daily admin summary at 21:00 WAT.
 
 ## 8. Reseller client
@@ -335,12 +336,12 @@ fulfil(orderId):
 
 ## 9. Alerts
 
-`notifier.ts` sends to all three channels in parallel and never throws:
-- email via Resend to the owner
+`notifier.ts` sends to all three channels in parallel (8 second timeout each), never throws, never blocks the caller, and strips every link from the text:
+- email via Resend, from `ALERT_EMAIL_FROM` (a domain verified in Resend) to `ALERT_EMAIL`
 - Telegram message to the admin chat id(s)
 - ntfy.sh topic push (high priority for failures)
 
-Triggers: low balance, out of stock, `needs_attention` order, partial order, invalid API key, webhook signature failure, repeated Groq failure, boot after crash, buyer asked for support, buyer needs help activating, new lead. Each trigger type has a cooldown (default 30 minutes) except order failures. A daily summary goes out at 21:00 WAT: orders, links sold, revenue, failures, reseller balance and links left, pending orders.
+Triggers: low balance, out of stock, `needs_attention` order, partial order, invalid API key, webhook signature failure, repeated Groq failure, boot after crash, buyer asked for support, buyer needs help activating, new lead. Each trigger type has a cooldown (default 30 minutes, stored in `settings` as `alert_cooldown:<key>` so a restart does not resend, checked one at a time per key so a burst sends once) except order failures. A daily summary goes out at 21:00 WAT: orders, links sold, revenue, failures, reseller balance and links left, pending orders.
 
 ## 10. Deployment
 
@@ -363,7 +364,7 @@ GROQ_API_KEY, GROQ_MODEL, GROQ_FALLBACK_MODELS
 DATABASE_URL
 UNIT_PRICE_NGN=3500, MAX_QTY_PER_ORDER=10, LOW_BALANCE_ORDERS=5
 SUPPORT_WHATSAPP_INTL=2348087357158, REMINDER_DELAY_MINUTES=180
-ALERT_EMAIL, RESEND_API_KEY, NTFY_TOPIC
+ALERT_EMAIL, ALERT_EMAIL_FROM, RESEND_API_KEY, NTFY_TOPIC
 SALES_CUTOFF (optional, empty by default)
 (the offer line is a setting, not an env var: /offertext)
 ```
