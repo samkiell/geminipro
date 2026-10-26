@@ -18,6 +18,7 @@ export const REDACT_PATHS = [
   'activation_link',
   'link',
   'links',
+  'order.value',
   '*.apiKey',
   '*.secretKey',
   '*.token',
