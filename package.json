@@ -4,6 +4,7 @@
   "private": true,
   "description": "Telegram agent that sells Gemini Pro 18 month activation links",
   "type": "module",
+  "packageManager": "pnpm@11.5.1",
   "engines": {
     "node": ">=22.12"
   },
@@ -26,6 +27,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.5",
     "drizzle-kit": "^0.31.11",
