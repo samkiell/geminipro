@@ -2,7 +2,10 @@ import { ConfigError, loadConfig, loadDotEnv, type Config } from './config.js';
 import { createDb } from './db/client.js';
 import { buildServer } from './server.js';
 import { BachsClient } from './services/bachs.js';
+import { telegramSender } from './services/delivery.js';
+import { createFulfilment } from './services/fulfilment.js';
 import { logNotifier, type Notify } from './services/notifier.js';
+import { createResellerClient } from './services/reseller.js';
 import { createLogger, type Logger } from './util/logger.js';
 import { withTimeout } from './util/time.js';
 
@@ -35,8 +38,19 @@ async function main(): Promise<void> {
     logger.error({ err }, 'database not reachable at boot');
   }
 
+  if (config.RESELLER_MOCK && config.NODE_ENV === 'development') await startDevMockReseller(config, logger);
+
   const notify = logNotifier(logger);
   const bachs = new BachsClient({ secretKey: config.BACHS_SECRET_KEY, logger });
+  const fulfilment = createFulfilment({
+    db: database.db,
+    reseller: createResellerClient(config, logger),
+    productId: config.RESELLER_PRODUCT_ID,
+    send: telegramSender(config.TELEGRAM_BOT_TOKEN),
+    notify,
+    logger,
+    supportWhatsapp: config.SUPPORT_WHATSAPP,
+  });
 
   const app = buildServer({
     logger,
@@ -46,8 +60,9 @@ async function main(): Promise<void> {
       bachs,
       webhookSecret: config.BACHS_WEBHOOK_SECRET,
       notify,
-      // Fulfilment arrives with the orders/fulfilment prompt; the reconciler will pick these up.
-      onPaid: (orderId) => logger.warn({ orderId }, 'order paid; fulfilment is not wired yet'),
+      onPaid: async (orderId) => {
+        await fulfilment.fulfil(orderId);
+      },
     },
   });
 
@@ -95,6 +110,24 @@ async function checkFeeSetup(bachs: BachsClient, config: Config, notify: Notify,
     }
   } catch (err) {
     logger.warn({ err }, 'could not read the Bachs fee setup');
+  }
+}
+
+/**
+ * Dev convenience: run the in-memory mock reseller inside `pnpm dev`, so a sandbox payment can be
+ * fulfilled without a second terminal. The mock lives in test/, so it only exists under tsx.
+ */
+async function startDevMockReseller(config: Config, logger: Logger): Promise<void> {
+  const port = Number(new URL(config.RESELLER_MOCK_URL).port);
+  const modulePath = '../test/mocks/reseller-server.js';
+  try {
+    const mock = (await import(modulePath)) as {
+      startMockReseller: (options: { port: number }) => Promise<{ url: string }>;
+    };
+    const { url } = await mock.startMockReseller({ port });
+    logger.info({ url }, 'mock reseller running (RESELLER_MOCK=true)');
+  } catch (err) {
+    logger.warn({ err }, 'could not start the mock reseller here; run `pnpm mock:reseller` if purchases fail');
   }
 }
 
