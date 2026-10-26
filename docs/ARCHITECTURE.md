@@ -1,4 +1,4 @@
-# Architecture: samkielbot_geminipro
+# Architecture: geminiprosamkiel_bot
 
 Owner: Samuel Ezekiel (@samkieldev) | Version 1 | 26 Oct 2026 | Companion to `docs/PRD.md`
 
@@ -17,9 +17,9 @@ flowchart LR
   S --> A[Agent loop - Groq]
   A -->|tool calls| T[Tool layer - validated code]
   T --> DB[(Neon Postgres)]
-  T -->|initialize| PS[Paystack]
+  T -->|create checkout| PS[Bachs]
   B -->|pays| PS
-  PS -->|charge.success webhook| S
+  PS -->|checkout.completed webhook| S
   S --> F[Fulfilment engine]
   F -->|POST /orders| R[Reseller API]
   F --> DB
@@ -56,7 +56,7 @@ geminipro/
     server.ts             fastify routes
     routes/
       telegram.ts         POST /telegram/webhook
-      paystack.ts         POST /paystack/webhook (raw body)
+      bachs.ts            POST /bachs/webhook (raw body)
       health.ts           GET /health
     bot/
       bot.ts              grammY setup, commands, button handlers
@@ -69,7 +69,7 @@ geminipro/
     services/
       pricing.ts          fee gross up, totals
       orders.ts           order state machine
-      paystack.ts         initialize, verify, signature check
+      bachs.ts            checkout create and get, signature check
       reseller.ts         reseller client, error mapping
       fulfilment.ts       fulfil orders, partial handling
       delivery.ts         send links to buyer
@@ -103,7 +103,7 @@ geminipro/
 |---|---|---|---|
 | `get_price` | `quantity` (int, default 1) | computes base, fee, total | `{quantity, baseNgn, feeNgn, totalNgn}` |
 | `check_availability` | none | reads reseller stock and balance, subtracts pending paid orders, applies `MAX_QTY_PER_ORDER` | `{canSell, maxQuantity}` |
-| `create_payment_link` | `quantity` (int 1..max) | rechecks availability, enforces one pending order per user, creates order, calls Paystack initialize | `{orderId, totalNgn, expiresInMinutes}` (the link goes to the button, not the model) |
+| `create_payment_link` | `quantity` (int 1..max) | rechecks availability, enforces one pending order per user, creates order, creates a Bachs checkout | `{orderId, totalNgn, expiresInMinutes}` (the link goes to the button, not the model) |
 | `get_my_orders` | none | lists this user's last 5 orders | status and quantity only, never links |
 | `resend_my_links` | `orderId` | checks ownership and `delivered` status, rate limits to 3 resends, sends links directly to the chat in code | `{sent: n}` |
 | `cancel_pending_order` | none | cancels the user's `awaiting_payment` order | `{cancelled: bool}` |
@@ -112,7 +112,7 @@ geminipro/
 Rules enforced in code, regardless of what the model says:
 - quantity is clamped and validated, never trusted
 - an order is only created through `create_payment_link`
-- no tool returns an activation link or a Paystack secret
+- no tool returns an activation link or a payment secret
 - tools only act on the calling user's `telegram_id`, taken from the update, never from model args
 
 ### 5.3 Agentic behaviors in v1
@@ -136,7 +136,7 @@ you are the sales assistant for samkiel's gemini pro link shop on telegram. you 
 style: very short replies, lowercase, casual, friendly. no em dashes. no long lists. one or two sentences usually.
 
 facts you can state:
-- price: 3500 naira per link plus paystack fees. use get_price for exact totals.
+- price: 3500 naira per link plus a small payment fee shown at checkout. use get_price for exact totals.
 - you get google ai pro for 18 months from the activation date: higher gemini limits, 5tb storage, veo 3, nano banana, flow and whisk, notebooklm and deep research, antigravity and jules with higher limits, up to 1000 ai credits monthly, gemini in gmail, docs, sheets and more.
 - how it works: pay, get the link here, open it, sign in with the google account you want it on, and activate.
 - if someone already has a google ai plan: activating moves that account to google ai pro and it runs for 18 months from activation.
@@ -177,7 +177,8 @@ create table orders (
   fee_ngn int not null default 0,
   amount_ngn int not null,
   status order_status not null default 'created',
-  paystack_reference text unique not null,
+  payment_reference text unique not null,  -- gp_{id}, the Bachs checkout reference
+  checkout_id text unique, checkout_url text,
   paid_at timestamptz, expires_at timestamptz, delivered_at timestamptz,
   nudge_sent boolean default false,
   fulfil_lease_until timestamptz,
@@ -205,7 +206,7 @@ create table events (
   kind text not null, ref text, payload jsonb,
   created_at timestamptz default now()
 );
-create unique index on events (kind, ref) where kind = 'paystack_webhook';
+create unique index on events (kind, ref) where kind = 'bachs_webhook';  -- ref = Bachs event id
 
 create table messages (
   id bigserial primary key,
@@ -228,32 +229,34 @@ sequenceDiagram
   participant B as Buyer
   participant Ag as Agent
   participant T as Tools
-  participant PS as Paystack
+  participant PS as Bachs
   participant W as Webhook
   participant F as Fulfilment
   participant R as Reseller
   B->>Ag: i need 2 links
   Ag->>T: check_availability, get_price(2)
   Ag->>T: create_payment_link(2)
-  T->>PS: initialize (amount in kobo, reference)
+  T->>PS: create checkout (NGN amount, reference)
   T-->>Ag: orderId, total
   Ag-->>B: short reply + pay button
   B->>PS: pays
-  PS->>W: charge.success
-  W->>W: verify signature, dedupe, verify API, match amount
+  PS->>W: checkout.completed / collection.succeeded
+  W->>W: verify signature, dedupe, fetch checkout, match amount
   W->>F: order paid
   F->>R: POST /orders x2 (idempotency keys)
   R-->>F: links
   F-->>B: links via Telegram
 ```
 
-### 7.2 Paystack specifics
+### 7.2 Bachs specifics
 
-- Initialize: `POST https://api.paystack.co/transaction/initialize` with `amount` in kobo, `email` (Telegram has no email, so use `{telegram_id}@tg.samkiel.dev`), `reference` (`gp_{orderId}`), `metadata {orderId, telegramId}`.
-- Webhook: use the raw request body, compute `HMAC SHA512` with the Paystack secret key, compare to the `x-paystack-signature` header with a timing safe compare. Return 200 fast, process after.
-- On `charge.success`: insert into `events` (unique per reference to dedupe), call `GET /transaction/verify/:reference`, require `status = success`, `currency = NGN`, `amount = order.amount_ngn * 100`.
-- Atomic transition: `UPDATE orders SET status='paid', paid_at=now() WHERE paystack_reference=$1 AND status IN ('awaiting_payment','expired') RETURNING *`. No row, no work. Late payments after expiry are still honored, because the money has already moved.
-- Fees: if the Paystack account bears fees on the customer, set `GROSS_UP=false`. Otherwise `pricing.ts` computes `total = ceil((base + FEE_FLAT) / (1 - FEE_PCT))`, with `FEE_PCT=0.015` and `FEE_FLAT=100` as env values to confirm in the Paystack dashboard (also respect the fee cap if one applies).
+Payments go through Bachs (https://docs.bachs.io). `sk_sandbox_` keys use `https://sandbox-api.bachs.io`, `sk_live_` keys use `https://api.bachs.io`, auth is `Authorization: Bearer <key>`. Money is a decimal string (`"3500.00"`), compared in minor units.
+
+- Create checkout: `POST /v1/checkout-sessions` with `pricing {currency: NGN, amount}`, `reference` (`gp_{orderId}`, unique per account forever), `metadata {order_id, telegram_id, quantity}`, `customer {email: {telegram_id}@tg.samkiel.dev}` (Telegram has no email), `payment_method_types [NGN_CARD, NGN_BANK_TRANSFER]`, `expires_in_minutes` (15), `success_url`/`cancel_url` back to the bot, and header `Idempotency-Key: checkout_{orderId}`. Returns `checkout_id` and `checkout_url` (the pay button).
+- Webhook: Bachs signs `"{timestamp}.{raw_body}"` with HMAC SHA256 using the endpoint's signing secret (`BACHS_WEBHOOK_SECRET`). Verify `X-Bachs-Signature-V2` (`t=..,v1=..`, any `v1` may match during a secret rotation) or `X-Bachs-Timestamp` + `X-Bachs-Signature`, with a timing safe compare and a 5 minute replay window. Bad signature: 401 and alert.
+- On `checkout.completed` or `collection.succeeded` (either can come first, each can repeat): skip if the event id is already in `events`, find the order by `data.reference` or `data.checkout_id`, then `GET /v1/checkout-sessions/{checkout_id}` and require `status = completed`, `currency = NGN`, the same `reference`, and `amount >= order.amount_ngn`. Not completed yet or Bachs unreachable: answer 503 so Bachs retries (about 80 minutes of retries). Mismatch: hold the order as `needs_attention` and alert.
+- Atomic transition, in one transaction with recording the event id: `UPDATE orders SET status='paid', paid_at=now() WHERE id=$1 AND status IN ('awaiting_payment','expired') RETURNING *`. No row, no work. Late payments after expiry are honored (Bachs can complete an expired checkout, e.g. a bank transfer already on its way), because the money has already moved.
+- Fees: the Bachs account's `fee_preference` decides who pays the processing fee (NGN card 2%, NGN bank transfer 1.5% capped at 2000). With `customer_pays`, set `GROSS_UP=false`: Bachs adds the exact fee at checkout. With `org_pays`, set `GROSS_UP=true`: `pricing.ts` computes `total = ceil((base + FEE_FLAT) / (1 - FEE_PCT))` (`FEE_PCT=0.02`, `FEE_FLAT=0`). The app reads `GET /v1/accounts/checkout/settings` at boot and alerts if the two disagree.
 
 ### 7.3 Fulfilment
 
@@ -281,7 +284,7 @@ fulfil(orderId):
 ### 7.4 Reconciler (timer every 30 seconds, and once at boot)
 
 - `awaiting_payment` past `expires_at`: mark `expired`; before that, if unpaid after ~10 minutes and `nudge_sent=false`, send the single nudge.
-- Orders still `awaiting_payment` or `expired` for up to 24 hours: call Paystack verify to catch missed webhooks.
+- Orders still `awaiting_payment` or `expired` for up to 24 hours: fetch the Bachs checkout to catch missed webhooks.
 - `paid`, `partial`, or `fulfilling` with expired lease: run `fulfil`.
 - Balance check every 5 minutes: alert if below threshold (with a cooldown so alerts are not spammed).
 
@@ -304,12 +307,12 @@ Triggers: low balance, out of stock, `needs_attention` order, partial order, inv
 
 ## 10. Deployment
 
-- **Render** web service (free), Node 22. Build: `npm ci && npm run build`. Start: `npm run start` (runs migrations, then the server).
+- **Render** web service (free), Node 22. Build: `corepack enable && pnpm install --frozen-lockfile && pnpm build`. Start: `pnpm start` (runs migrations, then the server).
 - **Health:** `GET /health` returns 200 with db check. Uptime monitor pings every 10 minutes (free instances sleep after 15 idle minutes).
 - **Telegram:** `setWebhook` to `https://<service>.onrender.com/telegram/webhook` with `secret_token`. The route rejects requests without the matching header.
-- **Paystack:** webhook URL `https://<service>.onrender.com/paystack/webhook` set in the dashboard (test and live).
+- **Bachs:** webhook endpoint `https://<service>.onrender.com/bachs/webhook` for `checkout.completed`, `collection.succeeded`, `checkout.expired`, set in the developer portal (sandbox and live are separate, each with its own signing secret).
 - **Neon:** use the pooled connection string, `sslmode=require`.
-- **Cold starts:** a sleeping service takes about a minute to wake. Telegram retries updates and Paystack retries webhooks, and the reconciler recovers anything missed. If sales are lost to sleeping, move to the $7/month instance.
+- **Cold starts:** a sleeping service takes about a minute to wake. Telegram retries updates and Bachs retries webhooks, and the reconciler recovers anything missed. If sales are lost to sleeping, move to the $7/month instance.
 - Keep `render.yaml` in the repo so the service can be recreated quickly.
 
 ### Environment variables
@@ -317,8 +320,8 @@ Triggers: low balance, out of stock, `needs_attention` order, partial order, inv
 ```
 NODE_ENV, PORT, PUBLIC_URL
 TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ADMIN_TELEGRAM_IDS
-PAYSTACK_SECRET_KEY, GROSS_UP, FEE_PCT, FEE_FLAT
-RESELLER_BASE_URL, RESELLER_API_KEY, RESELLER_PRODUCT_ID, RESELLER_MOCK
+BACHS_SECRET_KEY, BACHS_WEBHOOK_SECRET, GROSS_UP, FEE_PCT, FEE_FLAT
+RESELLER_BASE_URL, RESELLER_API_KEY, RESELLER_PRODUCT_ID, RESELLER_MOCK, RESELLER_MOCK_URL
 GROQ_API_KEY, GROQ_MODEL, GROQ_FALLBACK_MODELS
 DATABASE_URL
 UNIT_PRICE_NGN=3500, MAX_QTY_PER_ORDER=10, LOW_BALANCE_ORDERS=5
@@ -330,7 +333,8 @@ SALES_CUTOFF (optional, empty by default)
 ## 11. Security checklist
 
 - All secrets in env vars. `.env` gitignored, `.env.example` committed.
-- Verify Telegram secret header and Paystack signature on raw bodies.
+- Verify Telegram secret header and Bachs signature on raw bodies.
+- Sandbox payment keys only run with the mock reseller, live keys only with the real one (enforced at boot).
 - Admin commands and admin agent gated by Telegram id allowlist.
 - LLM has no secrets, no links, no payment authority. Tool args validated with zod. Per user rate limits.
 - Log redaction for tokens, keys, and activation links.
@@ -341,15 +345,15 @@ SALES_CUTOFF (optional, empty by default)
 ## 12. Testing
 
 - **Unit:** fee gross up, quantity clamping, signature verification, state transitions, idempotency key generation, availability math.
-- **Integration:** local mock reseller server (`RESELLER_MOCK=true`) that can simulate success, pending, out of stock, insufficient funds, timeouts, and partial failures. Paystack in test mode with a simulated signed webhook.
+- **Integration:** local mock reseller server (`RESELLER_MOCK=true`) that can simulate success, pending, out of stock, insufficient funds, timeouts, and partial failures. Bachs sandbox with a simulated signed webhook.
 - **Agent evals:** a small script that runs scripted buyer conversations (buy 1, buy 3, price question, existing plan question, "where is my link", prompt injection attempts, off topic) and checks tool calls and that replies never include a link.
-- **Smoke test before launch:** one real Paystack test payment end to end against the mock, then one real $0.90 reseller purchase with a live key and a small real payment.
+- **Smoke test before launch:** one Bachs sandbox payment end to end against the mock, then one real $1.20 reseller purchase with a live key and a small real payment.
 
 ## 13. Build order
 
 1. Scaffold, config, health route, Neon connection, migrations.
 2. Reseller client plus mock server.
-3. Paystack service plus webhook route.
+3. Bachs service plus webhook route.
 4. Order state machine plus fulfilment engine plus delivery.
 5. Agent loop, tools, prompt, scripted fallback.
 6. Admin commands, alerts, reconciler.
