@@ -79,6 +79,8 @@ The mock reseller keeps everything in memory. While it runs, `POST http://127.0.
 
 The service is a free Render web service described by `render.yaml`: Node 22, build `corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm build`, start `pnpm start`, health check `/health`. `pnpm start` applies pending migrations, then boots, so a fresh clone with only env vars set deploys on its own. A fresh database gets its tables on first boot, and later boots skip migrations that are already applied.
 
+A service created by hand with Render's defaults also works: build `npm install; npm run build`, start `npm start` (it runs the migrations), even with `NODE_ENV=production` (TypeScript and `@types/node` are regular dependencies for this reason). `/health` shows the deployed commit (`"commit":"2c4d24a"`).
+
 ### 1. Neon
 
 1. Use your Neon project (or a separate branch for production) and copy the **pooled** connection string: `-pooler` in the host, `?sslmode=require` at the end. That is `DATABASE_URL`.
@@ -92,7 +94,7 @@ The service is a free Render web service described by `render.yaml`: Node 22, bu
 4. Put that URL in `PUBLIC_URL` on Render if you did not already, and redeploy.
 5. On your machine, with the same `PUBLIC_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` and `ADMIN_TELEGRAM_IDS` in `.env`, run `pnpm webhook:set`. It points Telegram at `/telegram/webhook`, registers the command menus and prints the Bachs webhook URL.
 6. Add that Bachs webhook endpoint in the Bachs developer portal, put its signing secret in `BACHS_WEBHOOK_SECRET` on Render, and redeploy.
-7. Stop `pnpm dev` on your machine while the deployed bot is live: local polling removes the webhook. If it happens, run `pnpm webhook:set` again. (A second bot from BotFather for local testing avoids this.)
+7. Local runs stay off the live shop. Once production runs with a live Bachs key it marks its database: `pnpm dev` with that `DATABASE_URL` refuses to start (a run already going stops its reconciler), and local polling never deletes a webhook that is set. For local work use a separate Neon branch and a second bot from BotFather.
 
 | Variable (set in Render) | What to put |
 |---|---|

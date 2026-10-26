@@ -62,6 +62,10 @@ Add one by sending the photo to the bot with the caption `/addproof` (real, pers
 
 Telegram retries updates and Bachs retries webhooks (about 80 minutes). The reconciler catches anything missed when the service wakes. If sales are being lost to sleeping, move to a paid instance.
 
+## Working on the code locally
+
+The live shop marks its database (`settings.live_shop_database`). `pnpm dev` refuses to start on that database, so point `DATABASE_URL` in `.env` at a separate Neon branch and `TELEGRAM_BOT_TOKEN` at a second bot from BotFather. Local polling never removes the live webhook; if the bot stops answering anyway, run `pnpm webhook:set` with the Render `PUBLIC_URL`.
+
 ## Admin commands answer "i don't know that command"
 
 Your id is not in `ADMIN_TELEGRAM_IDS`. Send `/myid` to the bot, add the number to `ADMIN_TELEGRAM_IDS` in Render (comma separated), redeploy, then run `pnpm webhook:set` so the admin menu shows. The boot log says how many admin ids are configured and warns when there are none.
