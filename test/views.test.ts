@@ -126,7 +126,7 @@ describe('status message', () => {
     const text = renderStatus(statusOrder('delivered'), facts).text;
     expect(text).toContain('✅ delivered');
     expect(text).toContain('receipt: 2 links · ₦7,000 paid + fee');
-    expect(text).toContain('paid 26 oct, 14:05 wat');
+    expect(text).toContain('paid 26 oct, 2:05pm wat');
   });
 
   it('renders every state in plain words, without dashes or buttons', () => {

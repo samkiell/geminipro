@@ -18,15 +18,15 @@ export const naira = (amount: number) => `₦${amount.toLocaleString('en-NG')}`;
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 const WAT_DATE = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Lagos', day: 'numeric', month: 'short' });
-const WAT_TIME = new Intl.DateTimeFormat('en-GB', {
+const WAT_TIME = new Intl.DateTimeFormat('en-US', {
   timeZone: 'Africa/Lagos',
-  hour: '2-digit',
+  hour: 'numeric',
   minute: '2-digit',
-  hourCycle: 'h23',
+  hour12: true,
 });
 export const watDate = (d: Date) => WAT_DATE.format(d).toLowerCase();
-export const watDateTime = (d: Date) => `${watDate(d)}, ${WAT_TIME.format(d)} wat`;
-export const watTime = (d: Date) => WAT_TIME.format(d);
+export const watTime = (d: Date) => WAT_TIME.format(d).toLowerCase().replace(/\s+/g, '');
+export const watDateTime = (d: Date) => `${watDate(d)}, ${watTime(d)} wat`;
 
 // Callback data, all under Telegram's 64 bytes. Ids in it are never trusted: handlers re-check
 // that the order belongs to whoever tapped.

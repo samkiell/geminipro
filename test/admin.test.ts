@@ -207,7 +207,7 @@ describe('admin commands', () => {
     await bot.handleUpdate(command('/stats', ADMIN));
     expect(lastTextTo(ADMIN)).toContain('activated: 1 of 1 delivered links (100%), 1 today');
     await bot.handleUpdate(command(`/order ${order.orderNo}`, ADMIN));
-    expect(lastTextTo(ADMIN)).toMatch(/link 1: completed, delivered, activated \d+ \w+, \d\d:\d\d wat/);
+    expect(lastTextTo(ADMIN)).toMatch(/link 1: completed, delivered, activated \d+ \w+, \d{1,2}:\d\d[ap]m wat/);
   });
 
   it('/offertext refuses a date', async () => {

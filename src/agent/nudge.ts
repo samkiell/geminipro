@@ -11,7 +11,7 @@ import { saveTurn } from './history.js';
 // payment link was issued and not paid, then never again for that order. Run by the reconciler.
 // A fixed template, not the model: the model's quota is kept for buyers' messages.
 
-export const NUDGE_AFTER_MINUTES = 10;
+export const NUDGE_AFTER_MINUTES = 5;
 
 export interface NudgeDeps {
   db: Db;

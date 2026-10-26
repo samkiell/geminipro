@@ -23,6 +23,7 @@ import { createNotifier, type Notify } from './services/notifier.js';
 import { PAYMENT_WINDOW_MINUTES, reservedUnits } from './services/orders.js';
 import { pricingFromConfig } from './services/pricing.js';
 import { createProof, seedProof } from './services/proof.js';
+import { createCountdownRunner } from './services/countdown.js';
 import { createReconciler } from './services/reconciler.js';
 import { sendActivationReminders } from './services/reminders.js';
 import { createResellerClient } from './services/reseller.js';
@@ -210,9 +211,19 @@ async function main(): Promise<void> {
     sendReminders: () => sendActivationReminders({ db, port, logger, delayMinutes: config.REMINDER_DELAY_MINUTES }),
   });
 
+  const countdown = createCountdownRunner({
+    db,
+    port,
+    facts,
+    logger,
+    onChange: flows.orderChanged,
+  });
+  countdown.start();
+
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     logger.info({ signal }, 'shutting down');
     try {
+      countdown.stop();
       reconciler.stop();
       if (polling) await bot.stop();
       await app.close();
