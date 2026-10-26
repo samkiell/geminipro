@@ -79,7 +79,9 @@ const envSchema = z.object({
   // Minutes after delivery before the one "did you activate your link?" reminder.
   REMINDER_DELAY_MINUTES: int().min(1).default(180),
 
-  ALERT_EMAIL: z.email().default('hello@samkiel.dev'),
+  ALERT_EMAIL: z.email().default('ezekiel.samuel@samkiel.tech'),
+  // Resend sender: an address on a domain verified in Resend (samkiel.dev is).
+  ALERT_EMAIL_FROM: z.string().default('geminipro alerts <hello@samkiel.dev>'),
   RESEND_API_KEY: z.string().optional(),
   NTFY_TOPIC: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'expected an ntfy topic name (letters, digits, _ or -)'),
 

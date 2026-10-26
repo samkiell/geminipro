@@ -62,6 +62,8 @@ services:
         value: "180"
       - key: ALERT_EMAIL
         sync: false
+      - key: ALERT_EMAIL_FROM
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: NTFY_TOPIC

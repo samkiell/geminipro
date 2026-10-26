@@ -10,6 +10,7 @@ import type { HelpPage } from '../content/help.js';
 import type { Db } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { OWNER_LINKS, ownerButtons } from '../knowledge/owner.js';
+import type { Notify } from '../services/notifier.js';
 import { findOwnOrder, UNPAID_OPEN } from '../services/orders.js';
 import type { Logger } from '../util/logger.js';
 import type { Flows } from './flows.js';
@@ -34,6 +35,8 @@ export interface BotDeps {
   rateLimit?: { max: number; windowMs: number };
   /** Admin commands, registered before the buyer ones (they never reach non admins). */
   registerAdmin?: (bot: Bot) => void;
+  /** Owner alerts; used here to report that the model is rate limited or down. */
+  notify?: Notify;
 }
 
 const MAX_USER_TEXT = 1_000;
@@ -240,11 +243,21 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
       const phantom = !keyboard && !toolCtx.cardShown && /\b(tap|button|pay now)\b/i.test(answer.text);
       await reply(telegramId, answer.text, keyboard ?? (phantom ? MENU : undefined));
       saved = answer.text;
-    } else if (toolCtx.cardShown) {
-      saved = "your order card is above. tap pay when you're ready.";
-      await reply(telegramId, saved);
     } else {
-      saved = await scripted(telegramId, username, userText, lang);
+      if (answer?.failure !== 'empty') {
+        deps.notify?.({
+          level: 'warning',
+          title: 'groq unavailable, scripted replies in use',
+          body: `The agent could not answer (${answer?.failure ?? 'no model free'}). Buyers get scripted replies and can still buy. On the free tier this usually clears within a minute.`,
+          cooldownKey: 'groq',
+        });
+      }
+      if (toolCtx.cardShown) {
+        saved = "your order card is above. tap pay when you're ready.";
+        await reply(telegramId, saved);
+      } else {
+        saved = await scripted(telegramId, username, userText, lang);
+      }
     }
 
     await saveTurn(db, telegramId, 'user', userText);
