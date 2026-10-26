@@ -74,6 +74,10 @@ export const orders = pgTable(
     check('orders_quantity_check', sql`${t.quantity} > 0`),
     index('orders_status_updated_at_idx').on(t.status, t.updatedAt),
     index('orders_telegram_id_created_at_idx').on(t.telegramId, t.createdAt.desc()),
+    // One unpaid order per user at a time, enforced by the database even under concurrent requests.
+    uniqueIndex('orders_one_pending_per_user_idx')
+      .on(t.telegramId)
+      .where(sql`status in ('created', 'awaiting_payment')`),
   ],
 );
 
@@ -95,6 +99,8 @@ export const orderItems = pgTable(
     activationLink: text('activation_link'),
     attempts: integer('attempts').notNull().default(0),
     error: text('error'),
+    // Set once Telegram accepted a message containing this link.
+    deliveredAt: timestamptz('delivered_at'),
   },
   (t) => [unique('order_items_order_id_idx_unique').on(t.orderId, t.idx)],
 );
