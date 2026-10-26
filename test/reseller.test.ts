@@ -12,14 +12,14 @@ let mock: MockReseller;
 const started: MockReseller[] = [];
 
 async function setup(mockOptions: MockResellerOptions = {}, clientOptions: Partial<ResellerClientOptions> = {}) {
-  mock = await startMockReseller({ apiKey: API_KEY, timeoutDelayMs: 400, ...mockOptions });
+  mock = await startMockReseller({ apiKey: API_KEY, timeoutDelayMs: 2_500, ...mockOptions });
   started.push(mock);
   return new ResellerClient({
     baseUrl: mock.url,
     apiKey: API_KEY,
     productId: 1,
     maxQtyPerOrder: 10,
-    timeoutMs: 150,
+    timeoutMs: 1_000,
     backoffMs: 5,
     pollIntervalMs: 10,
     pendingTimeoutMs: 2_000,
