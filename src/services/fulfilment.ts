@@ -58,14 +58,15 @@ export async function fulfil(deps: FulfilmentDeps, orderId: string): Promise<Ful
 
   const failures: string[] = [];
   for (const item of await loadItems(db, orderId)) {
-    if (item.status === 'completed') continue;
+    if (item.status === 'completed' || item.idx >= order.quantity) continue;
     await renewLease(db, orderId);
     const result = await buyItem(deps, item, log);
     if (result !== 'completed') failures.push(`link ${item.idx + 1}: ${result}`);
     if (AUTH_FAILED.has(result)) break;
   }
 
-  const items = await loadItems(db, orderId);
+  // Replacement links (/replace) sit beyond the ordered quantity and are delivered by admin.
+  const items = (await loadItems(db, orderId)).filter((i) => i.idx < order.quantity);
   const bought = items.filter((i) => i.status === 'completed' && i.activationLink);
   const fresh = bought.filter((i) => !i.deliveredAt);
   const remaining = order.quantity - bought.length;
@@ -190,6 +191,7 @@ async function buyItem(deps: FulfilmentDeps, item: OrderItem, log: Logger): Prom
           level: 'critical',
           title: 'reseller api key rejected',
           body: `The reseller returned ${code}. Sales are paused until the key is fixed and /resume is sent.`,
+          cooldownKey: 'reseller_key',
         });
       }
       return code;

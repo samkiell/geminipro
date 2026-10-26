@@ -291,6 +291,14 @@ export async function findOwnOrderByNo(db: Db, telegramId: number, orderNo: stri
   return order;
 }
 
+/** Admin lookup by order number, any buyer. "GP-1042", "gp1042" and "1042" all work. */
+export async function findOrderByNo(db: Db, orderNo: string): Promise<Order | undefined> {
+  const digits = /(\d{3,})/.exec(orderNo)?.[1];
+  if (!digits) return undefined;
+  const [order] = await db.select().from(orders).where(eq(orders.orderNo, `GP-${digits}`));
+  return order;
+}
+
 export const HISTORY_PAGE_SIZE = 5;
 
 /** Paid orders and the current unpaid one, newest first. Abandoned ones are left out. */

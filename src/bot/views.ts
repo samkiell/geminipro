@@ -205,7 +205,7 @@ export interface LinkItem {
   link: string;
 }
 
-export type LinksMode = 'first' | 'more' | 'again';
+export type LinksMode = 'first' | 'more' | 'again' | 'replacement';
 
 /**
  * Tap-to-copy links: each in <code> (escaped), HTML parse mode, no previews, split under 4096
@@ -226,6 +226,7 @@ export function linksMessages(input: {
     first: `payment confirmed ✅ order ${orderNo}`,
     more: `more of order ${orderNo} is ready ✅`,
     again: `order ${orderNo}`,
+    replacement: `replacement for order ${orderNo} ✅`,
   }[mode];
   const blocks = [
     `${header}\nyour ${plural(links.length, 'link', 'links')}, tap to copy:`,
