@@ -1,4 +1,4 @@
-import { pino, type Logger } from 'pino';
+import { pino, type DestinationStream, type Logger } from 'pino';
 import { REDACT_PATHS, REDACTED } from './redact.js';
 
 export type { Logger };
@@ -6,10 +6,12 @@ export type { Logger };
 export interface LoggerOptions {
   level?: string;
   pretty?: boolean;
+  /** Where log lines go. Defaults to stdout. */
+  destination?: DestinationStream;
 }
 
-export function createLogger({ level = 'info', pretty = false }: LoggerOptions = {}): Logger {
-  return pino({
+export function createLogger({ level = 'info', pretty = false, destination }: LoggerOptions = {}): Logger {
+  const options = {
     level,
     redact: { paths: REDACT_PATHS, censor: REDACTED },
     ...(pretty && {
@@ -18,5 +20,6 @@ export function createLogger({ level = 'info', pretty = false }: LoggerOptions =
         options: { translateTime: 'SYS:HH:MM:ss', ignore: 'pid,hostname' },
       },
     }),
-  });
+  };
+  return destination ? pino(options, destination) : pino(options);
 }
