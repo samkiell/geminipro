@@ -1,6 +1,6 @@
 # geminipro
 
-Telegram agent ([@samkielbot_geminipro](https://t.me/samkielbot_geminipro)) that sells Gemini Pro 18 month activation links. Buyers chat with the bot, pay in NGN through Paystack, and the bot buys the link from the reseller API and delivers it.
+Telegram agent ([@geminiprosamkiel_bot](https://t.me/geminiprosamkiel_bot)) that sells Gemini Pro 18 month activation links. Buyers chat with the bot, pay in NGN through [Bachs](https://docs.bachs.io), and the bot buys the link from the reseller API and delivers it.
 
 - Product requirements: [docs/PRD.md](docs/PRD.md)
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -9,10 +9,10 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 
 ## Setup
 
-1. Install Node.js 22 or newer, then install dependencies:
+1. Install Node.js 22 or newer and pnpm (`corepack enable`), then install dependencies:
 
    ```sh
-   npm install
+   pnpm install
    ```
 
 2. Create a Neon project and copy the **pooled** connection string (it contains `-pooler` in the host and ends with `?sslmode=require`).
@@ -28,7 +28,7 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 4. Create the tables:
 
    ```sh
-   npm run db:migrate
+   pnpm db:migrate
    ```
 
    This only needs `DATABASE_URL`, so you can run it before the rest of `.env` is filled in.
@@ -36,7 +36,7 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 5. Start the dev server (restarts on file changes):
 
    ```sh
-   npm run dev
+   pnpm dev
    ```
 
    Check it: `curl http://localhost:3000/health` returns `{"ok":true,"db":"ok"}`. It returns 503 if the database is unreachable.
@@ -45,26 +45,34 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 
 | Script | What it does |
 |---|---|
-| `npm run dev` | run `src/index.ts` with reload |
-| `npm run build` | compile to `dist/` |
-| `npm run start` | run the compiled server |
-| `npm run typecheck` | type check `src` and `test` |
-| `npm run lint` | ESLint |
-| `npm test` | vitest |
-| `npm run db:generate` | generate a new SQL migration after editing `src/db/schema.ts` |
-| `npm run db:migrate` | apply pending migrations |
-| `npm run mock:reseller` | run the mock reseller API on port 4010 (used when `RESELLER_MOCK=true`) |
+| `pnpm dev` | run `src/index.ts` with reload |
+| `pnpm build` | compile to `dist/` |
+| `pnpm start` | run the compiled server |
+| `pnpm typecheck` | type check `src` and `test` |
+| `pnpm lint` | ESLint |
+| `pnpm test` | vitest |
+| `pnpm db:generate` | generate a new SQL migration after editing `src/db/schema.ts` |
+| `pnpm db:migrate` | apply pending migrations |
+| `pnpm mock:reseller` | run the mock reseller API on port 4010 (used when `RESELLER_MOCK=true`) |
 
 ## Test mode and live mode
 
-Paystack test keys (`sk_test_`) must run with `RESELLER_MOCK=true`, and live keys (`sk_live_`) with `RESELLER_MOCK=false`. The app refuses to boot otherwise, because a test payment must never spend the real reseller balance and a real payment must never get a mock link.
+Bachs sandbox keys (`sk_sandbox_`) must run with `RESELLER_MOCK=true`, and live keys (`sk_live_`) with `RESELLER_MOCK=false`. The app refuses to boot otherwise, because a sandbox payment must never spend the real reseller balance and a real payment must never get a mock link. The key also picks the Bachs environment: `sk_sandbox_` talks to `sandbox-api.bachs.io`, `sk_live_` to `api.bachs.io`.
+
+## Payments (Bachs)
+
+1. In the Bachs dashboard, set **who pays the processing fee** to the customer (`fee_preference: customer_pays`) and keep `GROSS_UP=false`. Bachs then adds the exact fee at checkout and you receive the full price. If you keep `org_pays`, set `GROSS_UP=true` so the bot adds the fee itself. The app checks this at boot and alerts if they disagree.
+2. Add a webhook endpoint at `https://<your service>/bachs/webhook` for the events `checkout.completed`, `collection.succeeded` and `checkout.expired`, and put its signing secret in `BACHS_WEBHOOK_SECRET`. Sandbox and live each need their own endpoint and secret.
+3. To receive sandbox webhooks on your machine without a public URL, run `bachs listen --forward-to localhost:3000/bachs/webhook --events checkout.completed,collection.succeeded,checkout.expired` and use the `whsec_` secret it prints.
+
+An order is only marked paid after the signature checks out and Bachs itself reports the checkout as completed, in NGN, for at least the order amount. Anything else holds the order as `needs_attention` and alerts the owner.
 
 The mock reseller keeps everything in memory. While it runs, `POST http://127.0.0.1:4010/__mock/control` changes its behaviour, for example `{"set":{"stock":0}}`, `{"faults":["timeout"]}` or `{"failNthItem":{"n":2}}`. `GET /__mock/state` shows the current state.
 
 ## Changing the database schema
 
 1. Edit `src/db/schema.ts`.
-2. `npm run db:generate` writes a new SQL file to `src/db/migrations/`. Read it before committing.
-3. `npm run db:migrate` applies it.
+2. `pnpm db:generate` writes a new SQL file to `src/db/migrations/`. Read it before committing.
+3. `pnpm db:migrate` applies it.
 
 Never edit a migration that has already been applied to a real database. Add a new one.
