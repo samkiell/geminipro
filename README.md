@@ -129,9 +129,11 @@ Every link is bought from the reseller at about $1.20. Top up on the reseller's 
 
 ## What buyers see
 
-- **Commands**: `/start`, `/buy`, `/history`, `/help`. Everything else is chat ("i need 3", "where is my link", "who made you").
-- **Buying**: an order summary card with − and + for quantity, the fee line, the offer line, [pay] and [cancel], plus a live status message that turns into the receipt.
-- **Delivery**: links in tap-to-copy code blocks, numbered for bulk orders, with [need help on whatsapp] [my orders].
+- **Commands**: `/start`, `/buy`, `/history`, `/invite`, `/help`. `/myid` (unlisted) answers anyone with their Telegram id. Everything else is chat ("i need 3", "where is my link", "who made you").
+- **Buying**: a draft card with − and + ("₦3,500 each + fee", the offer line, [continue], [cancel]). No order and no order number exist until [continue]. Then the same message becomes the payment card with [pay now] and a live countdown ("⏳ pay before 1:45pm wat · 12:30 left") to the expiry Bachs returned, then "✅ paid, getting your links…", then "🎉 delivered". One user action sends at most 2 new messages.
+- **Channel gate**: [continue] only works for members of @samkieldevtg (`GATE_CHANNEL`). Others are asked to join and tap [i have joined ✅]; the quantity is kept. The bot must be an admin of the channel. If the check itself fails, buyers are let through and you get an alert.
+- **Delivery**: links in tap-to-copy code blocks with Telegram's confetti effect, numbered for bulk orders, with a ✅ per link, [need help] and [invite & earn 🎁].
+- **Referrals**: `/invite` shows the buyer's link (`?start=ref_<code>`), progress and free links earned. Every 3 friends whose first paid order is delivered earn 1 free link, up to 3 (`REFERRAL_THRESHOLD`, `REFERRAL_MAX_REWARDS`). Free links are bought and delivered like normal orders and show in /history.
 - **Activation, the last step**: each link has a ✅ button. After activating, the buyer taps it and confirms; the link is closed in every message that showed it and never shown again. /stats counts activations.
 - **History**: orders as buttons (GP-1042 · 2 links · 26 oct · delivered ✅), each with its card and [show my links].
 - **Buttons disappear** once their job is done; stale taps say "this button has expired".
@@ -140,7 +142,7 @@ Every link is bought from the reseller at about $1.20. Top up on the reseller's 
 
 > Groq's free tier (about 8,000 tokens a minute per model) is not enough for launch traffic: one call costs about 750 tokens, so roughly 10 messages a minute per model. Upgrade the Groq plan before launch and check its limits page in the Groq console.
 
-Admins (ids in `ADMIN_TELEGRAM_IDS`) also get `/admin`, `/balance`, `/stats`, `/allorders`, `/order`, `/resend`, `/replace`, `/pause`, `/resume`, `/offertext`, `/leads`. Nobody else sees or can run them. `/admin` opens a panel with a button for every one of them: orders open with a tap, "find an order" and "change offer text" ask for a reply, and replace asks to confirm because it costs money. Run `pnpm webhook:set` to register both menus.
+Admins (ids in `ADMIN_TELEGRAM_IDS`; send `/myid` to the bot to get yours, and check the boot log line "admin ids configured") also get `/admin`, `/balance`, `/stats`, `/allorders`, `/order`, `/resend`, `/replace`, `/pause`, `/resume`, `/offertext`, `/leads`. Nobody else sees or can run them. `/admin` opens a panel with a button for every one of them: orders open with a tap, "find an order" and "change offer text" ask for a reply, and replace asks to confirm because it costs money. Run `pnpm webhook:set` to register both menus.
 
 The offer line ("offer ending very soon") is a setting, not code: change it with `/offertext last 50 links left`. Buyer facing text never states an end date.
 
@@ -150,9 +152,10 @@ Every alert goes out at once to email (Resend, from `ALERT_EMAIL_FROM` to `ALERT
 
 - **Always, per order**: a paid order that could not be fulfilled, a payment held for review.
 - **At most once per 30 minutes per trigger** (remembered across restarts): low stock, low reseller balance (fewer than `LOW_BALANCE_ORDERS` links left), reseller key rejected, bad webhook signatures, more than 5 scripted replies in 5 minutes (Groq rate limited), no proof screenshots yet, fee setup mismatch, service restarted.
-- **Daily summary at 21:00 WAT**: today's orders, links and revenue, failures, the reseller balance and stock.
+- **Daily summary at 21:00 WAT**: today's orders, links and revenue, failures, the reseller balance and stock, referrals (friends qualified, free links granted and what they cost).
+- **Also**: channel gate check failing (failed open), free referral links waiting on a pause or on stock.
 
-The reconciler runs at boot and then every 30 seconds (balance every 5 minutes). It expires unpaid orders and retires their cards, asks Bachs about unpaid checkouts up to a day old in case a webhook was lost, finishes paid orders that never started or whose fulfilment died mid way (the reseller idempotency keys make that safe), retries paid orders stuck for lack of balance or stock every 10 minutes, and sends payment nudges and activation reminders.
+The reconciler runs at boot and then every 30 seconds (balance every 5 minutes). It expires unpaid orders and retires their cards, deletes draft carts older than a day, grants referral rewards that were waiting, asks Bachs about unpaid checkouts up to a day old in case a webhook was lost, finishes paid orders that never started or whose fulfilment died mid way (the reseller idempotency keys make that safe), retries paid orders stuck for lack of balance or stock every 10 minutes, and sends payment nudges and activation reminders.
 
 ## Review before launch
 

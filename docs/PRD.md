@@ -30,7 +30,7 @@ Selling manually means: fund the reseller balance, buy on the reseller's bot, co
 
 - Crypto payments from buyers.
 - A website or web dashboard (admin analytics live inside the bot).
-- Referral, discount, or loyalty features.
+- Discount or loyalty features. (A referral program exists, see 8.10.)
 - Automated reseller top ups (owner funds the reseller account manually in crypto).
 - Other products.
 
@@ -50,21 +50,21 @@ Two separate flows. The bot never moves money between them.
 
 ## 7. Buyer flow
 
-1. Buyer messages the bot (for example "i want the gemini pro link", "how much", "i need 3").
-2. Bot replies briefly with price and what they get.
-3. Bot runs pre-sale checks (stock, reseller balance, quantity).
-4. Bot creates a Bachs checkout and sends the payment link with the exact amount.
+1. Buyer messages the bot (for example "i want the gemini pro link", "how much", "i need 3") or sends /buy.
+2. Bot shows a draft card: quantity with − and +, "₦3,500 each + fee", the no refund line and the offer line. No order exists yet and no order number is used.
+3. Buyer taps [continue]. Code checks channel membership (8.2A), rechecks stock and balance, then creates ONE order (one order number) and ONE Bachs checkout for the final quantity.
+4. The same message becomes the payment card with [pay now] and a live countdown to the provider's expiry.
 5. Buyer pays.
-6. Bachs webhook confirms payment.
+6. Bachs webhook confirms payment. The payment card becomes "✅ paid, getting your links…".
 7. Bot buys the links from the reseller.
-8. Bot sends the link(s) with a short note.
+8. Bot sends the link(s) with the confetti effect; the payment card becomes "🎉 delivered".
 9. If anything fails after payment, bot tells the buyer it is being handled, gives the WhatsApp support number, and alerts the admin.
 
 ## 8. Functional requirements
 
 ### 8.1 Buyer agent (Groq, one call per message)
 
-- One model call per free text message at most (Prompt C, the same design as SKDL). The model (`GROQ_MODELS`, best first: qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b) reads a small static prompt, the last 6 messages and a short context block (price, stock, offer, buyer), and returns one JSON decision: an intent (`buy`, `price`, `history`, `show_order`, `proof`, `help`, `owner`, `shop`, `support`, `lead`, `chat`), its details (quantity, order number, topic, lead summary) and a reply of at most 240 characters. Code validates it and carries it out: cards, prices, orders, proof and owner texts are rendered by code, never by the model. Full spec in `docs/ARCHITECTURE.md` section 5.
+- One model call per free text message at most (Prompt C, the same design as SKDL). The model (`GROQ_MODELS`, best first: qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b) reads a small static prompt, the last 6 messages and a short context block (price, stock, offer, buyer), and returns one JSON decision: an intent (`buy`, `price`, `history`, `show_order`, `proof`, `help`, `owner`, `shop`, `support`, `lead`, `invite`, `chat`), its details (quantity, order number, topic, lead summary) and a reply of at most 240 characters. Code validates it and carries it out: cards, prices, orders, proof and owner texts are rendered by code, never by the model. Full spec in `docs/ARCHITECTURE.md` section 5.
 - Zero model calls for commands, buttons, the stepper, history navigation, the help hub and the most common messages (greetings, price, buy, my orders, proof questions, help, support), answered from `src/content/`. Repeated general questions are cached for 5 minutes.
 - Proof (8.1A): skeptical buyers get real, blurred screenshots of past activations with a fixed honest text.
 - Agentic behavior: handles multi step requests ("i need 3, how much, can i pay now"), answers questions about the offer from a built in knowledge base (including what happens for people who already have a Google plan, and that the 18 months run from activation), handles trust questions and objections briefly, resumes unfinished orders, sends one follow up nudge for an abandoned payment link, and escalates unclear or problem cases to WhatsApp support.
@@ -74,7 +74,8 @@ Two separate flows. The bot never moves money between them.
 - Hard limits: the agent never sees or writes activation links, never confirms a payment, never calls the reseller, and cannot change the price. Money and delivery are deterministic code. Decisions are validated in code (quantity limits, order ownership, one pending order per user); any intent outside the list, or invalid JSON, gets the scripted reply. User text is untrusted.
 - Style: very short, lowercase (enforced in code), casual, english unless the buyer writes pidgin, no em dashes (stripped in code).
 - Resilience: each model call times out at 6s, at most 2 models are tried per message, a rate limited model is skipped until its reset, 6 model messages per buyer per minute, `LLM_CONCURRENCY` calls at once with a short queue. Otherwise the bot switches at once to smart scripted replies: it still opens the order card, history, the right help page or the proof album, in varied wording (english or pidgin), with [buy] [price] [proof] [support], so sales never stop. More than 5 scripted replies in 5 minutes alerts the owner; the daily summary counts model calls and fallbacks. Groq's free tier is not enough for launch traffic: upgrade the plan before launch.
-- Buyer commands, exactly four: `/start`, `/buy`, `/history`, `/help`. Typed requests like "my orders" or "where is my link" open the history view.
+- One response per action: a UI intent (buy, price, history, show_order, proof, help, support, owner, shop, invite) sends only its UI and drops the model's reply; `chat` sends only the reply. One user action produces at most 2 new messages (edits do not count). Button taps never count toward the message rate limit, and the rate limit notice is sent once per window.
+- Buyer commands, exactly five: `/start`, `/buy`, `/history`, `/invite`, `/help`. `/myid` is unlisted and answers anyone with their Telegram id. Typed requests like "my orders" or "where is my link" open the history view.
 - Owner side (stretch goal): natural language read only questions ("how much did i sell today", "what's the balance") through an admin tool set. Destructive actions stay explicit commands.
 
 ### 8.1A Proof
@@ -93,12 +94,25 @@ Two separate flows. The bot never moves money between them.
 - If the buyer asks for more than available, the bot says how many it can sell right now.
 - If nothing can be sold, the bot says it is out of stock and does not create a payment link.
 - **No time cutoff by default.** Selling stops only when the reseller has no stock or balance is too low. An optional `SALES_CUTOFF` env var exists but is off.
-- One pending payment per user at a time.
+- One pending payment per user at a time. Pressing buy again shows that same payment card instead of a new order.
+
+### 8.2A Draft cart and order numbers
+
+- `/buy`, the buy buttons and the `buy` intent never create an order. They create or update a draft (`order_drafts`, one per user) and the − and + buttons only edit the draft quantity in the same message (clamped to availability and `MAX_QTY_PER_ORDER`).
+- An order number comes from the sequence only when an order row is created, which happens only on [continue]. Tapping + five times then continuing uses exactly one order number; an abandoned draft uses none. Drafts older than 24 hours are deleted by the reconciler.
+
+### 8.2B Channel gate
+
+- Buyers must be members of `GATE_CHANNEL` (@samkieldevtg) to tap [continue]. Nothing is gated at /start, in chat, price, proof or help. The bot must be an administrator of the channel.
+- Checked on every [continue] with a fresh `getChatMember`. `creator`, `administrator`, `member`, and `restricted` with `is_member` count as members. Non members see "join our channel to continue 👇" with [join channel] and [i have joined ✅]; once they join, the draft card comes back with the quantity kept. Not joined yet: an alert "you haven't joined yet".
+- Fail open: if the check errors (bot not admin, Telegram error), the buyer goes through and admins get an alert (30 minute cooldown).
+- Never gated: payment confirmation, delivery, history, show links, support, admin commands. Admins bypass the gate.
 
 ### 8.3 Payment (Bachs)
 
 - Create an NGN checkout with a unique reference tied to our order id (card and bank transfer).
-- Payment link expires after a set window (default 15 minutes). A bank transfer already on its way can still complete it later, and is honored.
+- The checkout asks Bachs for a `BACHS_SESSION_TTL_MINUTES` (15) session, and the expiry Bachs returns is stored as `orders.expires_at`; the local window is only a fallback when the response has none. A bank transfer already on its way can still complete it later, and is honored.
+- Payment card: "order GP-1042 · 2 links / ₦7,000 + fee / ⏳ pay before 1:45pm wat · 12:30 left" with [pay now] and [cancel]. One scheduler loop (every 5 seconds) edits awaiting cards every 30 seconds and every 10 seconds in the last minute, under a global edit rate limit with backoff on Telegram 429. At expiry the card reads "expired ⌛ send /buy to start again. if you already paid, wait a minute, your link will still arrive." Cancel edits it to "cancelled". After payment the same message becomes "✅ paid, getting your links…" and then "🎉 delivered"; there is no separate checklist or receipt.
 - Webhook verifies the Bachs signature (HMAC SHA256 over timestamp and raw body, with the endpoint's signing secret). Invalid signatures are rejected, logged and alerted.
 - On `checkout.completed` or `collection.succeeded`, also fetch the checkout from Bachs, and check status, amount, currency, and reference against the order before fulfilling.
 - Idempotent: duplicate or replayed webhooks never cause a second purchase (unique constraint on reference plus an atomic status change from `paid` to `fulfilling`).
@@ -117,23 +131,25 @@ Two separate flows. The bot never moves money between them.
 
 The delivery message is a fixed short template in code (so the facts are always right and links never pass through the LLM). Links are inside `<code>` so tapping copies them, never plain URLs, no link previews:
 
-> payment confirmed ✅ order GP-1042
-> your link, tap to copy:
+> 🎉 order GP-1042 delivered
+> 🔑 link 1 of 2, tap to copy:
 > `{link}`
-> open the browser where you're already signed in to the google account you want it on, paste the link and activate it.
-> ⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.
+> paste it in the browser where you're signed in to the google account you want it on, then activate.
+> ⚠️ expires soon. no refund if it expires before you activate it.
 
-Buttons: [✅ i've activated it] [need help on whatsapp] [my orders]. For bulk orders each link is numbered ("link 1 of 3") with its own [✅ link 1 activated] button, and long orders are split across messages under Telegram's limit. Activation links are never written to logs.
+Buttons: [✅ i've activated it] per link, then [need help] (WhatsApp, prefilled with the order number) and [invite & earn 🎁]. A free referral link uses the header "🎁 your free link". Long orders are split across messages under Telegram's limit. Activation links are never written to logs.
+
+The first delivery message carries Telegram's confetti message effect (`MESSAGE_EFFECT_CONFETTI`, private chats only). If Telegram rejects the effect (HTTP 400) the message is sent once more without it; any other failure is not resent, so links are never sent twice. A link counts as delivered only after Telegram accepts the message.
 
 The last step of the buy flow: once the buyer activates a link they tap its ✅ and confirm ("yes, it is activated. close it" or "not yet"). The link is then closed: every message that showed it is edited to "activated ✅, closed", and it is never shown again (not in history, not by /resend). The bot cannot cancel the link at Google; closing it only means the shop stops showing it. Activations are counted in /stats and the daily summary.
 
 ### 8.5A Buyer experience
 
-- Before payment, one order summary card: quantity with − and + buttons (clamped to what is available), price per link, fee line, total, availability, "no refund if the link expires before you activate it", the offer line, [pay] and [cancel].
-- A live status message per order (created, waiting for payment, payment received, getting your link, delivered) that becomes the receipt (order number, quantity, amount paid, date and time in WAT).
-- Buttons never stay live after their job: the card collapses to "paid ✅", "expired" or "cancelled", stale taps answer "this button has expired", menus edit one message.
+- Before payment, the draft card (8.2A), then the payment card with its countdown (8.3). Prices read "₦3,500 per link + fee"; the fee is never shown as a percentage.
+- One message follows the order: draft card, payment card, "✅ paid, getting your links…", "🎉 delivered". No stub messages: a card that must move to the bottom is deleted and sent again.
+- Buttons never stay live after their job: the card loses them once paid, expired or cancelled, stale taps answer "this button has expired", menus edit one message.
 - `/history`: orders as buttons, 5 per page; an order card with its timeline and [show my links].
-- `/help` hub: how it works, what you get, how to activate, existing plan, refunds and expiry, offer status, my orders, support.
+- `/help` hub: how it works, what you get, how to activate, existing plan, refunds and expiry, offer status, see proof, my orders, invite & earn, support. Each page is at most 4 short lines.
 - Human readable order numbers (GP-1001 onward). The offer line is a setting (default "offer ending very soon", changed with `/offertext`); buyer facing text never states an end date.
 - One activation reminder per order about 3 hours after delivery, unless every link is already marked activated ("did you activate your link?" with [yes, activated ✅] [i need help]; yes closes all its links), never between 23:00 and 07:00 WAT.
 
@@ -160,15 +176,24 @@ The last step of the buy flow: once the buyer activates a link they tap its ✅ 
 
 - `/admin`: panel with buttons for the commands below.
 - `/balance`: reseller USD balance and how many links it covers.
-- `/stats`: sales and revenue today and total, failures.
+- `/stats`: sales and revenue today and total, failures, activations, and referrals (friends qualified, free links granted, their reseller cost).
 - `/allorders`: last 10 orders with status. `/order GP-1042`: one order.
 - `/resend GP-1042`: resend delivered links.
 - `/replace GP-1042`: buy one extra link through the normal reseller path, send it, and record it.
 - `/pause` and `/resume`: stop or restart sales.
 - `/offertext <text>`: change the offer line; `/offertext` alone shows it.
 - `/leads`: latest 10 business inquiries.
-- Admin commands are only visible to and usable by admins; for anyone else they do not exist.
-- Daily summary at 21:00 WAT: orders, links sold, revenue, failures, reseller balance and links left, pending orders.
+- Admin commands are only visible to and usable by admins; for anyone else they do not exist. To find your id, send `/myid` to the bot and put it in `ADMIN_TELEGRAM_IDS`. At boot the service logs how many admin ids are set (not the ids) and warns if there are none.
+- Daily summary at 21:00 WAT: orders, links sold, revenue, failures, reseller balance and links left, pending orders, referrals.
+
+### 8.10 Referral program
+
+- Every user gets a 4 letter code, lowercase consonants only (`bcdfghjkmnpqrstvwxz`, so it never spells a word), made the first time they open /invite. Link: `https://t.me/geminiprosamkiel_bot?start=ref_<code>`.
+- Attribution: only a user's first ever /start with `ref_<code>` (any case) sets `referred_by`, once. Unknown codes, self referral and existing users are ignored.
+- A friend qualifies when their first paid order (amount above zero) is delivered and not refunded, once however many links they buy. Free links never qualify anyone.
+- Every `REFERRAL_THRESHOLD` (3) qualified friends earn 1 free link, up to `REFERRAL_MAX_REWARDS` (3) per person. A reward is a normal order (`source = 'referral_reward'`, amount 0, quantity 1, its own order number) bought and delivered through the same fulfilment engine and idempotency keys, with the "🎁 your free link" header. While sales are paused or stock or balance is short, the reward waits, admins are alerted, and the reconciler grants it later. A failed reward purchase is retried like any paid order.
+- The referrer gets one short message when a friend qualifies ("1 of 3 friends bought 🎉").
+- `/invite` and [invite & earn 🎁] show one message: the offer, progress ("▰▰▱ 2 of 3 friends have bought"), free links earned, the tap-to-copy link, [share with friends] and [my orders]. At the cap it says so plainly.
 
 ### 8.9 Alerts
 
@@ -184,8 +209,10 @@ State changes are persisted before external calls. A reconciliation job runs on 
 
 ## 10. Data (Neon Postgres)
 
-- **users:** telegram_user_id, username, first seen.
-- **orders:** id, telegram_user_id, quantity, status, amount_ngn, payment_reference (unique), checkout_id, timestamps, error info.
+- **users:** telegram_user_id, username, first seen, ref_code, referred_by.
+- **orders:** id, order_no, telegram_user_id, quantity, status, source (`purchase` or `referral_reward`), amount_ngn, payment_reference (unique), checkout_id, expires_at (from Bachs), timestamps, error info.
+- **order_drafts:** one draft cart per user (quantity, card message id), before any order exists.
+- **referrals:** referrer_id, referred_id (unique), qualified_at.
 - **order_items:** order_id, index, reseller_order_code, activation_link, status, delivered_at, activated_at, and the buyer messages that show it.
 - **events:** webhook payloads and reseller responses with secrets redacted.
 - **messages:** short chat history per user (last 10 turns used for the LLM).

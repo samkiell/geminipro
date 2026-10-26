@@ -8,7 +8,7 @@ Alerts arrive by email, in your Telegram chat with the bot, and on ntfy, all at 
 
 ## How sales are going
 
-`/stats` shows today and all time (orders, links, revenue), plus failures, orders in progress, orders waiting for payment, and how many delivered links buyers have marked activated. `/leads` lists the latest people who asked samkiel to build something.
+`/stats` shows today and all time (orders, links, revenue; free referral links are not counted as sales), plus failures, orders in progress, orders waiting for payment, how many delivered links buyers have marked activated, and referrals (friends qualified, free links granted, their cost at the current reseller price). `/leads` lists the latest people who asked samkiel to build something.
 
 ## Change the offer line
 
@@ -49,6 +49,18 @@ Add one by sending the photo to the bot with the caption `/addproof` (real, pers
 ## Render is asleep or restarting
 
 Telegram retries updates and Bachs retries webhooks (about 80 minutes). The reconciler catches anything missed when the service wakes. If sales are being lost to sleeping, move to a paid instance.
+
+## Admin commands answer "i don't know that command"
+
+Your id is not in `ADMIN_TELEGRAM_IDS`. Send `/myid` to the bot, add the number to `ADMIN_TELEGRAM_IDS` in Render (comma separated), redeploy, then run `pnpm webhook:set` so the admin menu shows. The boot log says how many admin ids are configured and warns when there are none.
+
+## Channel gate
+
+Buyers must join @samkieldevtg before [continue]. The bot must be an administrator of the channel, or every check fails. A failing check lets buyers through (sales never stop) and sends a "channel gate check failed" alert at most every 30 minutes: make the bot an admin again. To move the gate, change `GATE_CHANNEL` and `GATE_CHANNEL_URL`.
+
+## Referral rewards
+
+Every 3 friends who buy earn the referrer a free link (at most 3 each). The free link is a normal order (₦0, its own GP number) bought from the reseller, so it uses balance. If sales are paused or stock or balance is short, it waits and you get a "referral reward waiting" alert; it goes out by itself once that clears. A free link that fails to buy is retried like any paid order. `/order GP-1042` shows it like any other order.
 
 ## Rotate a key
 

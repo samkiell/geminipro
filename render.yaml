@@ -73,3 +73,16 @@ services:
         sync: false
       - key: SALES_CUTOFF
         sync: false
+      - key: BACHS_SESSION_TTL_MINUTES
+        value: "15"
+      # The bot must be an admin of this channel. Buyers must join it before [continue].
+      - key: GATE_CHANNEL
+        value: "@samkieldevtg"
+      - key: GATE_CHANNEL_URL
+        value: https://t.me/samkieldevtg
+      - key: MESSAGE_EFFECT_CONFETTI
+        value: "5046509860389126442"
+      - key: REFERRAL_THRESHOLD
+        value: "3"
+      - key: REFERRAL_MAX_REWARDS
+        value: "3"

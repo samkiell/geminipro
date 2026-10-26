@@ -59,9 +59,9 @@ geminipro/
       bachs.ts            POST /bachs/webhook (raw body, signature, verify, atomic paid)
       health.ts           GET /health
     bot/
-      bot.ts              middleware (private only, per user queue, rate limit), 4 commands, button routing, chat
-      flows.ts            everything the buyer sees about an order: card, stepper, status, history, links, help
-      views.ts            pure renderers: summary card, status/receipt, links, history, order card, help, reminder
+      bot.ts              middleware (private only, per user queue, rate limit), 5 commands + /myid, referral start, button routing, chat
+      flows.ts            everything the buyer sees about an order: draft card, channel gate, payment card, history, links, help, invite
+      views.ts            pure renderers: draft/payment/gate cards, links, history, order card, help, invite, reminder
       telegram.ts         TelegramPort over the Bot API (send, edit, edit buttons, answer), html escape, splitting
       commands.ts         command menus for buyers and admins
       admin.ts            admin commands, allowlist
@@ -84,14 +84,17 @@ geminipro/
       payments.ts         PaymentProvider interface
       bachs.ts            BachsClient, BachsProvider, webhook signature check
       pricing.ts          fee gross up, totals
-      orders.ts           order state machine, history queries
+      orders.ts           order state machine, drafts, history queries
       reseller.ts         reseller client, error mapping, availability
-      fulfilment.ts       fulfil orders, partial handling, delivery
+      fulfilment.ts       fulfil orders, partial handling, delivery (confetti effect)
+      referrals.ts        referral codes, attribution, qualification, reward orders
+      countdown.ts        one loop that keeps payment card countdowns live
+      stats.ts            /stats and daily summary numbers
       reminders.ts        activation reminder with quiet hours
       leads.ts            business inquiries
       proof.ts            proof screenshots: seed, album send with file_id reuse, admin add/remove
       settings.ts         paused, offer_text, alert cooldowns, model usage
-      reconciler.ts       timers: expire, nudge, verify, recover, balance, reminders, daily summary
+      reconciler.ts       timers: expire, drafts, nudge, verify, recover, referral rewards, balance, reminders, daily summary
       notifier.ts         email, telegram admin, ntfy
     db/
       schema.ts, client.ts, migrate.ts, migrations/
@@ -127,7 +130,7 @@ The old tool calling loop made 2 to 5 model calls per message and hit Groq's fre
 
 | Intent | What the code does |
 |---|---|
-| `buy` | clamps the quantity (1 to `MAX_QTY_PER_ORDER`) and shows the order card for it |
+| `buy` | clamps the quantity (1 to `MAX_QTY_PER_ORDER`) and shows the draft card for it (no order yet) |
 | `price` | price and total for the quantity, with [buy N] [see proof] |
 | `history` | the paginated history |
 | `show_order` | that order's card, only if it belongs to the buyer in the update; else "couldn't find it" |
@@ -136,11 +139,14 @@ The old tool calling loop made 2 to 5 model calls per message and hit Groq's fre
 | `support` | the WhatsApp support button, and an alert to the owner |
 | `owner`, `shop` | the canned section from `knowledge/owner.ts` for the topic, with link buttons |
 | `lead` | saves the lead from `summary` (3 a day per user), alerts the owner, portfolio button |
+| `invite` | the /invite card: referral link and progress |
 | `chat` | just the reply; if it talks about buying, prices or support, [buy] [price] [proof] [support] |
+
+UI intents send only their UI; the model's reply is dropped. Only `chat` sends the reply (`bot/respond.ts`).
 
 Rules enforced in code, regardless of what the model says:
 - quantity is clamped and validated, never trusted
-- an order is only created by code paths (/buy, buttons, the buy intent), always for the user in the update
+- an order is only created by [continue] on the draft card, always for the user in the update
 - the model never sees activation links, checkout URLs or payment secrets, and anything it writes is cleaned
 - the model cannot change prices: prices come from config, never from its reply
 
@@ -181,15 +187,21 @@ For skeptical buyers: real screenshots of real activations, personal details blu
 
 ## 5A. Buyer experience (Prompt A)
 
-- **Commands**: buyers have exactly `/start`, `/buy`, `/history`, `/help`. Typed requests like "my orders" or "where is my link" open the same history view.
-- **Summary card** (before payment): order number, quantity with − and + (clamped to what is available, editing the same message), price per link, fee line, total, availability, "no refund if the link expires before you activate it", the offer line, a [pay ₦X + fee] URL button to the Bachs checkout and [cancel]. A different quantity is a different checkout: the unpaid order is cancelled and replaced, and the same card is edited in place.
-- **Live status message**: one per order, created with the card, edited at every transition (`renderStatus`), throttled. After delivery it is the receipt: order number, quantity, amount paid, date and time in WAT.
-- **Disappearing buttons**: a message never keeps live buttons after its job is done. The card collapses to one line ("paid ✅ order GP-1042", "expired", "cancelled"). Taps on stale buttons answer "this button has expired". Menus (help, history) edit one message. The message with the links is never edited or deleted.
-- **Delivery**: links in `<code>` (tap to copy, HTML escaped), no link previews, no `protect_content`, "link 1 of 3" numbering, split under 4096 characters, buttons [need help on whatsapp] [my orders]. Delivered only after Telegram accepts.
+- **Commands**: buyers have exactly `/start`, `/buy`, `/history`, `/invite`, `/help`; `/myid` is unlisted. Typed requests like "my orders" or "where is my link" open the same history view.
+- **One message per order** (5B): draft card, then payment card, then "✅ paid, getting your links…", then "🎉 delivered", all one message edited in place (`summaryResolved`). Orders from before Prompt D may still have a separate status message (`renderStatus`), which is kept up to date.
+- **Disappearing buttons**: a message never keeps live buttons after its job is done. Taps on stale buttons answer "this button has expired". Menus (help, history, invite from the help hub) edit one message. The message with the links is never deleted.
+- **Delivery**: links in `<code>` (tap to copy, HTML escaped), no link previews, no `protect_content`, "🔑 link 1 of 3, tap to copy:" numbering, split under 4096 characters, a ✅ button per link, then [need help] [invite & earn 🎁]. The confetti effect goes on the first message. Delivered only after Telegram accepts.
 - **History**: 5 orders per page, newest first, each a button; an order card with status, total, date, support and [show my links] (5 a minute per user, ownership checked on every tap).
 - **Help hub** (`content/help.ts`): how it works, what you get, how to activate, existing plan, refunds and expiry, offer status, my orders, support.
 - **Support**: `https://wa.me/<SUPPORT_WHATSAPP_INTL>?text=hi, i need help with order GP-1042`.
 - **Offer line**: `settings.offer_text` (default "offer ending very soon"), changed with `/offertext`. No end date anywhere in buyer facing text.
+
+## 5B. Draft cart, channel gate, countdown, referrals (Prompt D)
+
+- **Draft cart** (`order_drafts`, keyed by telegram id): `startBuy` saves a draft and sends the draft card; − and + call `changeDraftQuantity` and edit the same message. `continueDraft` runs the gate, rechecks availability (clamps), calls `createOrder` (one order, one Bachs checkout with idempotency key `checkout_{orderId}`), edits the card into the payment card and deletes the draft. `order_no` defaults to `nextval('order_no_seq')`, so a number is used only when that row is inserted. A buyer with an unpaid order who presses buy again gets the same payment card moved to the bottom (old copy deleted).
+- **Channel gate** (`flows.checkGateMember`): `getChatMember(GATE_CHANNEL, userId)` on every [continue] and on [i have joined ✅]. Admins bypass. Errors fail open with a notifier alert, at most once per 30 minutes.
+- **Countdown** (`services/countdown.ts`): one loop every 5 seconds reads `awaiting_payment` orders with a card from the database (so it survives restarts), edits each every 30 seconds or every 10 seconds in its last minute, at most 20 edits a second with jitter, pauses on Telegram 429 for `retry_after`, and ignores "message is not modified". At `expires_at` (the Bachs session expiry) it expires the order and edits the card. Payments after expiry are still honoured.
+- **Referrals** (`services/referrals.ts`): the users middleware detects a first contact (`xmax = 0` on the upsert), and only then does `/start ref_<code>` call `attributeReferral`. After an order is delivered, fulfilment calls `orderDelivered`, which sets `referrals.qualified_at` once for a delivered purchase with amount above zero, messages the referrer, and calls `grantRewards`. Reward n for a referrer has `payment_reference = reward_<referrer>_<n>`, so concurrent qualifications cannot create it twice. Rewards are created only when sales are on and the reseller can cover them; otherwise the reconciler step `referral rewards` tries again. A reward order is `paid` at creation, so a failed purchase is retried by the normal recovery path.
 
 ## 6. Data model (Postgres)
 
@@ -200,7 +212,9 @@ create table users (
   created_at timestamptz default now(),
   last_seen_at timestamptz default now(),
   blocked boolean default false,
-  lang text not null default 'en'          -- 'en' or 'pcm' (pidgin), from what they write
+  lang text not null default 'en',         -- 'en' or 'pcm' (pidgin), from what they write
+  ref_code text unique,                    -- 4 lowercase consonants, made on first /invite
+  referred_by bigint                       -- set once, on the first ever /start with ref_<code>
 );
 
 create sequence order_no_seq start with 1001;  -- GP-1001, GP-1002, ...
@@ -218,7 +232,8 @@ create table orders (
   fee_ngn int not null default 0,
   amount_ngn int not null,
   status order_status not null default 'created',
-  payment_reference text unique not null,  -- gp_{id}, the Bachs checkout reference
+  source text not null default 'purchase',  -- 'purchase' or 'referral_reward' (amount 0)
+  payment_reference text unique not null,  -- gp_{id}, the Bachs checkout reference; reward_{referrer}_{n} for rewards
   checkout_id text unique, checkout_url text,
   paid_at timestamptz, expires_at timestamptz, delivered_at timestamptz,
   nudge_sent boolean default false,
@@ -271,6 +286,22 @@ create table messages (
 
 create table settings (key text primary key, value jsonb);  -- paused, offer_text, alert cooldowns, llm_usage:<date>, etc.
 
+create table order_drafts (                 -- draft carts: no order number until [continue]
+  telegram_id bigint primary key,
+  quantity int not null default 1,
+  message_id int,
+  updated_at timestamptz not null default now()  -- older than 24 hours: deleted by the reconciler
+);
+
+create table referrals (
+  id bigserial primary key,
+  referrer_id bigint not null references users(telegram_id),
+  referred_id bigint not null unique references users(telegram_id),  -- a friend counts once
+  qualified_at timestamptz,                -- first delivered paid order
+  created_at timestamptz not null default now()
+);
+create index on referrals (referrer_id);
+
 create table proof_items (                  -- proof screenshots (5.7)
   id bigserial primary key,
   key text not null unique,                 -- file name in assets/proof, or tg:<file_unique_id>
@@ -296,18 +327,20 @@ sequenceDiagram
   participant F as Fulfilment
   participant R as Reseller
   B->>Ag: i need 2 links (or /buy 2)
-  Ag->>T: create_payment_link(2)
-  T->>PS: create checkout (NGN amount, reference)
-  T-->>B: summary card (stepper, pay button) + live status message
-  T-->>Ag: shown, orderNo, total
-  Ag-->>B: one short line
+  Ag->>T: intent buy, quantity 2
+  T-->>B: draft card (− 2 +, continue), no order yet
+  B->>T: taps continue
+  T->>T: channel gate, recheck availability
+  T->>PS: create checkout (NGN amount, reference, expiry)
+  PS-->>T: checkout url, expires_at
+  T-->>B: same message becomes the payment card with a live countdown
   B->>PS: pays
   PS->>W: checkout.completed / collection.succeeded
   W->>W: verify signature, dedupe, fetch checkout, match amount
   W->>F: order paid
   F->>R: POST /orders x2 (idempotency keys)
   R-->>F: links
-  F-->>B: tap-to-copy links via Telegram, status message becomes the receipt
+  F-->>B: tap-to-copy links with confetti; the payment card becomes "🎉 delivered"
 ```
 
 ### 7.2 Bachs specifics
@@ -347,6 +380,8 @@ fulfil(orderId):
 ### 7.4 Reconciler (timer every 30 seconds, and once at boot)
 
 - `awaiting_payment` past `expires_at`: mark `expired` and retire its card; before that, if unpaid after ~10 minutes and `nudge_sent=false`, send the single nudge.
+- Delete draft carts older than 24 hours.
+- Grant referral rewards that were held back (paused, no stock or balance).
 - Orders still `awaiting_payment` or `expired` for up to 24 hours: fetch the Bachs checkout to catch missed webhooks.
 - `paid`, `partial`, or `fulfilling` with expired lease: run `fulfil`. Paid `needs_attention` orders are retried every 10 minutes (after a top up they complete on their own), except deliveries blocked by the buyer, which wait for `/resend`.
 - Balance check every 5 minutes: alert if fewer than `LOW_BALANCE_ORDERS` links are left by stock or by balance, after subtracting units promised to open orders (with a cooldown so alerts are not spammed).
@@ -374,7 +409,7 @@ Triggers: low balance, out of stock, `needs_attention` order, partial order, inv
 
 - **Render** web service (free), Node 22. Build: `corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm build`. Start: `pnpm start` (`node dist/db/migrate.js && node dist/index.js`: pending migrations, then the server). With `RESELLER_MOCK=true` (sandbox keys only) the app runs the mock reseller in process on 127.0.0.1, so a sandbox deploy works end to end.
 - **Health:** `GET /health` returns 200 with db check. Uptime monitor pings every 10 minutes (free instances sleep after 15 idle minutes).
-- **Telegram:** `pnpm webhook:set` calls `setWebhook` to `https://<service>.onrender.com/telegram/webhook` with `secret_token` (the route rejects requests without the matching header) and registers the command menus: four buyer commands by default, plus the admin list in each admin's chat (`BotCommandScopeChat`).
+- **Telegram:** `pnpm webhook:set` calls `setWebhook` to `https://<service>.onrender.com/telegram/webhook` with `secret_token` (the route rejects requests without the matching header) and registers the command menus: five buyer commands by default (start, buy, history, invite, help), plus the admin list in each admin's chat (`BotCommandScopeChat`).
 - **Bachs:** webhook endpoint `https://<service>.onrender.com/bachs/webhook` for `checkout.completed`, `collection.succeeded`, `checkout.expired`, set in the developer portal (sandbox and live are separate, each with its own signing secret).
 - **Neon:** use the pooled connection string, `sslmode=require`.
 - **Cold starts:** a sleeping service takes about a minute to wake. Telegram retries updates and Bachs retries webhooks, and the reconciler recovers anything missed. If sales are lost to sleeping, move to the $7/month instance.
@@ -393,6 +428,10 @@ UNIT_PRICE_NGN=3500, MAX_QTY_PER_ORDER=10, LOW_BALANCE_ORDERS=5
 SUPPORT_WHATSAPP_INTL=2348087357158, REMINDER_DELAY_MINUTES=180
 ALERT_EMAIL, ALERT_EMAIL_FROM, RESEND_API_KEY, NTFY_TOPIC
 SALES_CUTOFF (optional, empty by default)
+BACHS_SESSION_TTL_MINUTES=15 (session length asked of Bachs; fallback expiry)
+GATE_CHANNEL=@samkieldevtg, GATE_CHANNEL_URL=https://t.me/samkieldevtg
+MESSAGE_EFFECT_CONFETTI=5046509860389126442
+REFERRAL_THRESHOLD=3, REFERRAL_MAX_REWARDS=3 (referral links use TELEGRAM_BOT_USERNAME)
 (the offer line is a setting, not an env var: /offertext)
 ```
 
@@ -414,7 +453,8 @@ SALES_CUTOFF (optional, empty by default)
 - **Integration:** local mock reseller server (`RESELLER_MOCK=true`) that can simulate success, pending, out of stock, insufficient funds, timeouts, and partial failures. Bachs sandbox with a simulated signed webhook.
 - **Model decisions:** a mock Groq server (`test/mocks/groq-server.ts`) behind the real groq-sdk: valid and invalid JSON, 429 with retry-after, timeouts, model cooldown and failover, at most 2 models per message, every intent carried out by code, quantity clamping, order ownership, chat fallback buttons, the cache and the per buyer limit. Call counts are asserted: "i need 3, how much" costs exactly 1 call; buying through buttons, "is this real" and /history cost 0.
 - **Agent evals:** `pnpm eval:agent` sends scripted buyer messages through the same fast path and model decision against the real Groq models (buy 1, buy 3, price, existing plan, "where is my link", prompt injection, off topic, who made you, who is samkiel, bot or person, is this legit, where the links come from, are you from google, what samkiel built, build me a website, portfolio, supplier injection, balance, pidgin, returning buyer, is this real, show me proof, i dont believe you) and checks intents, quantities, topics, that replies are short and lowercase and never include a link or private information. Rate limited messages are reported as such, not as failures. It prints p50 and p95 latency (target on a paid plan: model call under 1.5s, reply under 2.5s).
-- **Buyer UX:** delivery formatting (code tags, escaping, splitting), buttons removed after pay, expiry and cancel, history pagination and ownership, status rendering for every state, offer text never a date, stepper limits, reminder quiet hours. `test/flows.test.ts` runs the whole buy, step to 3, pay, deliver, history, show links flow.
+- **Buyer UX:** delivery formatting (code tags, escaping, splitting, confetti), buttons removed after pay, expiry and cancel, history pagination and ownership, status rendering for every state, offer text never a date, stepper limits, reminder quiet hours, one response per action. `test/flows.test.ts` runs the whole buy, step to 3, pay, deliver, history, show links flow, proves that + five times then continue uses one order number, and covers the channel gate (member, left, kicked, restricted, API failure, join then retry).
+- **Referrals:** `test/referrals.test.ts`: codes, attribution rules, self referral, a friend buying twice counts once, a reward at exactly 3 and none at 2, the cap, a failed reward retried, rewards held while paused or out of stock, reward orders in /history, the /invite card.
 - **Smoke test before launch:** one Bachs sandbox payment end to end against the mock, then one real $1.20 reseller purchase with a live key and a small real payment.
 
 ## 13. Build order
