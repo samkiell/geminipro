@@ -65,12 +65,15 @@ Two separate flows. The bot never moves money between them.
 ### 8.1 Buyer agent (Groq, tool calling)
 
 - The bot is an agent, not a script. It runs a tool calling loop on Groq (`GROQ_MODEL`, default `openai/gpt-oss-120b`, with fallback models). It reads the buyer's message and recent history (last 10 turns), decides what to do, calls tools, and replies.
-- Tools, all executed by code: `get_price`, `check_availability`, `create_payment_link`, `get_my_orders`, `resend_my_links`, `cancel_pending_order`, `escalate_to_support`. Full spec in `docs/ARCHITECTURE.md`.
+- Tools, all executed by code: `get_price`, `check_availability`, `create_payment_link` (shows the order summary card), `show_history`, `show_order`, `cancel_pending_order`, `escalate_to_support`, `get_owner_info`, `save_lead`. Views are rendered by code; tools return only `{shown: true}` or plain facts. Full spec in `docs/ARCHITECTURE.md`.
 - Agentic behavior: handles multi step requests ("i need 3, how much, can i pay now"), answers questions about the offer from a built in knowledge base (including what happens for people who already have a Google plan, and that the 18 months run from activation), handles trust questions and objections briefly, resumes unfinished orders, sends one follow up nudge for an abandoned payment link, and escalates unclear or problem cases to WhatsApp support.
+- Owner knowledge (from `src/knowledge/owner.ts`, reviewed by samkiel): answers who made it (an AI assistant built by samkiel, never claims to be him, Google or Jio), who samkiel is, his projects and achievements, and whether the shop is legit and where links come from, honestly and briefly, with portfolio, GitHub and LinkedIn buttons. Never reveals the supplier, costs, margins, balance, admin commands or other buyers.
+- Leads: "can you build me a website" saves a lead (3 a day per user) and alerts the owner. Never quotes prices.
+- Light memory: first name, new or returning, past orders, preferred language. Pidgin in, light pidgin out.
 - Hard limits: the agent never sees or writes activation links, never confirms a payment, never calls the reseller, and cannot change the price. Money and delivery are deterministic code. Tool arguments are validated in code (quantity limits, one pending order per user). User text is untrusted.
 - Style: very short, lowercase, casual, no em dashes (stripped in code).
-- If Groq fails or rate limits, the bot falls back to scripted replies with inline buttons so sales never stop.
-- Command fallbacks: `/start`, `/buy`, `/status`, `/help`.
+- Groq's free tier is the budget. Under load or on a rate limit the bot switches at once (no waiting on Groq) to smart scripted replies: it still opens the order card, history, the right help page, or answers price, legit and support questions, in varied wording (english or pidgin), so sales never stop.
+- Buyer commands, exactly four: `/start`, `/buy`, `/history`, `/help`. Typed requests like "my orders" or "where is my link" open the history view.
 - Owner side (stretch goal): natural language read only questions ("how much did i sell today", "what's the balance") through an admin tool set. Destructive actions stay explicit commands.
 
 ### 8.2 Pre-sale checks (before issuing a payment link)
@@ -103,17 +106,30 @@ Two separate flows. The bot never moves money between them.
 
 ### 8.5 Delivery message
 
-The delivery message is a fixed short template (so the facts are always right and links never pass through the LLM). Questions about existing subscriptions are answered flexibly by the agent. Example:
+The delivery message is a fixed short template in code (so the facts are always right and links never pass through the LLM). Links are inside `<code>` so tapping copies them, never plain URLs, no link previews:
 
-> payment confirmed. here is your link:
-> {link}
-> open it, sign in to the google account you want it on, and activate. it runs for 18 months from activation. any issue, whatsapp 08087357158
+> payment confirmed ✅ order GP-1042
+> your link, tap to copy:
+> `{link}`
+> open the browser where you're already signed in to the google account you want it on, paste the link and activate it.
+> ⚠️ this link expires soon, so activate it now. if it expires before you activate it, there is no refund.
 
-For bulk orders, links are sent as a numbered list. The message also reminds buyers to activate quickly because the offer is ending. Activation links are never written to logs.
+Buttons: [need help on whatsapp] [my orders]. For bulk orders each link is numbered ("link 1 of 3"), and long orders are split across messages under Telegram's limit. Activation links are never written to logs.
+
+### 8.5A Buyer experience
+
+- Before payment, one order summary card: quantity with − and + buttons (clamped to what is available), price per link, fee line, total, availability, "no refund if the link expires before you activate it", the offer line, [pay] and [cancel].
+- A live status message per order (created, waiting for payment, payment received, getting your link, delivered) that becomes the receipt (order number, quantity, amount paid, date and time in WAT).
+- Buttons never stay live after their job: the card collapses to "paid ✅", "expired" or "cancelled", stale taps answer "this button has expired", menus edit one message.
+- `/history`: orders as buttons, 5 per page; an order card with its timeline and [show my links].
+- `/help` hub: how it works, what you get, how to activate, existing plan, refunds and expiry, offer status, my orders, support.
+- Human readable order numbers (GP-1001 onward). The offer line is a setting (default "offer ending very soon", changed with `/offertext`); buyer facing text never states an end date.
+- One activation reminder per order about 3 hours after delivery ("did you activate your link?" with [yes, activated ✅] [i need help]), never between 23:00 and 07:00 WAT.
 
 ### 8.6 Support
 
-- Dead link or any complaint: buyer messages the owner's WhatsApp support number (08087357158), which the bot shows in delivery messages, `/help`, and error messages.
+- Dead link or any complaint: buyer taps a support button that opens WhatsApp (08087357158, `https://wa.me/2348087357158`) with "hi, i need help with order GP-1042" filled in. It appears on delivery messages, order cards, `/help`, and error messages.
+- Policy: failed links are checked and replaced where possible, as soon as they are reported, but a replacement is not guaranteed. Links left to expire unused are not refunded. The wording lives in `src/content/help.ts`.
 - Owner replaces links from reseller stock through an admin command and the bot records the replacement.
 
 ### 8.7 Error handling
@@ -131,12 +147,17 @@ For bulk orders, links are sent as a numbered list. The message also reminds buy
 
 ### 8.8 Admin features (owner only, by Telegram id allowlist)
 
+- `/admin`: panel with buttons for the commands below.
 - `/balance`: reseller USD balance and how many links it covers.
 - `/stats`: sales and revenue today and total, failures.
-- `/orders`: recent orders with status.
-- `/resend <order>`: resend delivered links.
-- `/replace <order>`: send a replacement link for a dead one.
+- `/allorders`: last 10 orders with status. `/order GP-1042`: one order.
+- `/resend GP-1042`: resend delivered links.
+- `/replace GP-1042`: buy one extra link through the normal reseller path, send it, and record it.
 - `/pause` and `/resume`: stop or restart sales.
+- `/offertext <text>`: change the offer line; `/offertext` alone shows it.
+- `/leads`: latest 10 business inquiries.
+- Admin commands are only visible to and usable by admins; for anyone else they do not exist.
+- Daily summary at 21:00 WAT: orders, links sold, revenue, failures, reseller balance and links left, pending orders.
 
 ### 8.9 Alerts
 

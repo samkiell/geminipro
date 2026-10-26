@@ -57,7 +57,8 @@ Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pi
 | `pnpm db:migrate` | apply pending migrations |
 | `pnpm mock:reseller` | run the mock reseller API on port 4010 (`pnpm dev` already starts it when `RESELLER_MOCK=true`) |
 | `pnpm order:test [qty] [telegramId]` | sandbox only: create an order and print its Bachs checkout link; `--cancel` cancels it |
-| `pnpm eval:agent` | run scripted buyer conversations against the real Groq models and check tool use and reply rules |
+| `pnpm eval:agent [names]` | run scripted buyer conversations against the real Groq models and check tool use and reply rules |
+| `pnpm webhook:set` | point Telegram at `PUBLIC_URL`, register the command menus, print the Bachs webhook URL |
 
 ## Test mode and live mode
 
@@ -72,6 +73,29 @@ Bachs sandbox keys (`sk_sandbox_`) must run with `RESELLER_MOCK=true`, and live 
 An order is only marked paid after the signature checks out and Bachs itself reports the checkout as completed, in NGN, for at least the order amount. Anything else holds the order as `needs_attention` and alerts the owner.
 
 The mock reseller keeps everything in memory. While it runs, `POST http://127.0.0.1:4010/__mock/control` changes its behaviour, for example `{"set":{"stock":0}}`, `{"faults":["timeout"]}` or `{"failNthItem":{"n":2}}`. `GET /__mock/state` shows the current state.
+
+## What buyers see
+
+- **Commands**: `/start`, `/buy`, `/history`, `/help`. Everything else is chat ("i need 3", "where is my link", "who made you").
+- **Buying**: an order summary card with − and + for quantity, the fee line, the offer line, [pay] and [cancel], plus a live status message that turns into the receipt.
+- **Delivery**: links in tap-to-copy code blocks, numbered for bulk orders, with [need help on whatsapp] [my orders].
+- **History**: orders as buttons (GP-1042 · 2 links · 26 oct · delivered ✅), each with its card and [show my links].
+- **Buttons disappear** once their job is done; stale taps say "this button has expired".
+- **When Groq is rate limited** (free tier), the bot answers instantly with scripted replies that still open the card, history and help pages, in english or pidgin.
+
+Admins (ids in `ADMIN_TELEGRAM_IDS`) also get `/admin`, `/balance`, `/stats`, `/allorders`, `/order`, `/resend`, `/replace`, `/pause`, `/resume`, `/offertext`, `/leads`. Nobody else sees or can run them. Run `pnpm webhook:set` to register both menus.
+
+The offer line ("offer ending very soon") is a setting, not code: change it with `/offertext last 50 links left`. Buyer facing text never states an end date.
+
+## Review before launch
+
+samkiel must read these two files line by line; the bot says what they say.
+
+- [ ] `src/knowledge/owner.ts`: every fact about samkiel is true and public, nothing private (no matric number, birth date, family, church, finances, supplier, costs, margins, balance). Confirm the LinkedIn URL.
+- [ ] `src/content/help.ts`: how it works, what you get, activation steps, existing plan answer, and the refund and replacement policy are exactly what you will honour.
+- [ ] `src/agent/prompt.ts` and `src/bot/views.ts`: the price, fee wording and support number read right.
+- [ ] `/offertext` set to what you want buyers to see.
+- [ ] `pnpm eval:agent` passes (run it twice; it costs a few Groq calls).
 
 ## Changing the database schema
 

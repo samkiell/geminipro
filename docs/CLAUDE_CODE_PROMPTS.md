@@ -4,6 +4,8 @@ Use these in order, one per Claude Code session or one after another in the same
 
 Credentials to have ready: Telegram bot token (BotFather), your Telegram user id, Bachs sandbox and live secret keys with their webhook signing secrets, reseller API key, Groq API key, Neon connection string, Resend API key (optional), an ntfy topic name.
 
+**Update (26 Oct):** Prompt A (Bachs and the buyer UX) and Prompt B (owner knowledge and buyer memory) ran after Prompt 5 and change parts of Prompts 5 to 8. Where they differ, the docs win: buyers have exactly `/start`, `/buy`, `/history`, `/help` (no `/status`); the agent tools are `get_price`, `check_availability`, `create_payment_link` (shows the order card), `show_history`, `show_order`, `cancel_pending_order`, `escalate_to_support`, `get_owner_info`, `save_lead`; admin `/orders` is now `/allorders`, plus `/admin`, `/offertext` and `/leads`; the offer line is the `offer_text` setting, never a date; delivery is the tap-to-copy template in `src/bot/views.ts`; under Groq rate limits the bot answers with smart scripted replies.
+
 ---
 
 ## Prompt 0: project memory (save as `CLAUDE.md` in the repo root)
