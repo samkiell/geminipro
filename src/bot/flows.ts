@@ -8,26 +8,29 @@ import {
   cancelPendingOrder,
   closeLinks,
   createOrder,
+  deleteOrderDraft,
   deliveredLinks,
   expireUnpaidOrders,
   findOwnLink,
   findOwnOrder,
   findOwnOrderByNo,
   findPendingOrder,
+  getOrderDraft,
   historyPage,
   linksInMessage,
   PAYMENT_WINDOW_MINUTES,
   recordLinkMessage,
   reservedUnits,
+  saveOrderDraft,
   setOrderMessages,
   UNPAID_OPEN,
   type CreateOrderDeps,
   type CreateOrderResult,
 } from '../services/orders.js';
 import type { PaymentProvider } from '../services/payments.js';
-import type { PricingConfig } from '../services/pricing.js';
+import { priceFor, type PricingConfig } from '../services/pricing.js';
 import type { ResellerClient } from '../services/reseller.js';
-import { getOfferText } from '../services/settings.js';
+import { getOfferText, isPaused } from '../services/settings.js';
 import type { Logger } from '../util/logger.js';
 import type { OutMessage, TelegramPort } from './telegram.js';
 import {
@@ -35,12 +38,15 @@ import {
   activationConfirm,
   activationHelpReply,
   cb,
+  draftCard,
+  gateCard,
   helpHub,
   helpView,
   historyList,
   linkLabel,
   linksMessages,
   orderCard,
+  paymentCard,
   renderStatus,
   startMessage,
   summaryCard,
@@ -65,6 +71,9 @@ export interface FlowDeps {
   /** Where the buyer lands after paying: the bot's t.me link. */
   returnUrl: string | undefined;
   notify: Notify;
+  gateChannel?: string;
+  gateChannelUrl?: string;
+  adminUserIds?: readonly number[];
   /** Minimum gap between two edits of one status message. Default 1.2s. */
   statusThrottleMs?: number;
   /** Per buyer, "show my links". Default 5 a minute. */
@@ -72,7 +81,7 @@ export interface FlowDeps {
 }
 
 export type BuyOutcome =
-  | { ok: true; orderNo: string; quantity: number; totalNgn: number; maxQuantity: number }
+  | { ok: true; orderNo?: string; quantity: number; totalNgn: number; maxQuantity: number }
   | { ok: false; reason: 'unavailable'; maxQuantity: number }
   | { ok: false; reason: 'paused' | 'closed' | 'checkout_failed' | 'stale' };
 
@@ -244,41 +253,213 @@ export function createFlows(deps: FlowDeps) {
     maxQuantity,
   });
 
-  /** /buy, the buy buttons, the agent and the scripted fallback all start here. */
-  async function startBuy(telegramId: number, requested: number): Promise<BuyOutcome> {
-    const quantity = Math.min(Math.max(Math.trunc(requested) || 1, 1), facts.maxQtyPerOrder);
-    for (const expired of await expireUnpaidOrders(db, telegramId)) orderChanged(expired.id);
-
-    const pending = await findPendingOrder(db, telegramId);
-    if (pending) {
-      if (pending.status === 'awaiting_payment' && pending.quantity === quantity) {
-        return okOutcome(pending, await moveCard(pending));
+  let lastGateAlert = 0;
+  async function checkGateMember(telegramId: number): Promise<boolean> {
+    if (!deps.gateChannel) return true;
+    if (deps.adminUserIds?.includes(telegramId)) return true;
+    try {
+      const member = await port.getChatMember(deps.gateChannel, telegramId);
+      if (!member) return false;
+      const status = member.status;
+      if (status === 'creator' || status === 'administrator' || status === 'member') return true;
+      if (status === 'restricted' && Boolean(member.isMember)) return true;
+      return false;
+    } catch (err) {
+      // Fail open: if getChatMember errors (bot not admin, Telegram error), let the buyer through
+      // and alert the admin through the notifier with a 30 minute cooldown.
+      const now = Date.now();
+      if (now - lastGateAlert > 30 * 60 * 1000) {
+        lastGateAlert = now;
+        deps.notify({
+          level: 'warning',
+          title: 'channel gate check failed (failed open)',
+          body: `getChatMember for ${deps.gateChannel} failed: ${(err as Error).message}`,
+        });
       }
-      return replaceOrder(pending, quantity, undefined);
+      return true;
     }
-
-    const result = await createOrder(orderDeps(), { telegramId, quantity });
-    if (!result.ok) return refuse(telegramId, result, quantity);
-    return okOutcome(result.order, await presentOrder(result.order));
   }
 
-  /** Shows an unpaid order's card again at the bottom of the chat, deleting the old copy. */
-  async function moveCard(order: Order): Promise<number> {
+  /** Shows an unpaid order's payment card at the bottom of the chat, deleting the old copy. */
+  async function movePaymentCard(order: Order): Promise<number> {
     if (order.summaryMessageId) {
-      // Best effort: delete the old card so no stub remains.
       await port.delete(order.telegramId, order.summaryMessageId).catch(() => {});
     }
-    const [maxQuantity, offerText] = await Promise.all([availableFor(order), getOfferText(db)]);
-    const cardId = await port.send(order.telegramId, summaryCard({ order, maxQuantity, offerText, facts }));
+    const available = await availableFor(order);
+    const card = paymentCard({ order, facts });
+    const cardId = await port.send(order.telegramId, card);
     await setOrderMessages(db, order.id, { summaryMessageId: cardId, payMessageId: cardId });
-    return maxQuantity;
+    return available;
+  }
+
+  /** /buy, the buy buttons, the agent and the scripted fallback all start here. */
+  async function startBuy(telegramId: number, requested: number): Promise<BuyOutcome> {
+    for (const expired of await expireUnpaidOrders(db, telegramId)) orderChanged(expired.id);
+
+    if (await isPaused(db)) {
+      await port.send(telegramId, { text: 'sales are paused for a moment. please check back shortly.' });
+      return { ok: false, reason: 'paused' };
+    }
+    if (deps.salesCutoff && new Date() >= deps.salesCutoff) {
+      await port.send(telegramId, { text: 'sales have closed. thank you for your interest!' });
+      return { ok: false, reason: 'closed' };
+    }
+
+    // One active unpaid order per user. If they already have one and press buy again, show that same payment card.
+    const pending = await findPendingOrder(db, telegramId);
+    if (pending) {
+      return okOutcome(pending, await movePaymentCard(pending));
+    }
+
+    const available = await availableFor();
+    if (available < 1) {
+      await port.send(telegramId, {
+        text: "we're out of links right now. please check back soon.",
+        keyboard: [[supportButton(facts)]],
+      });
+      return { ok: false, reason: 'unavailable', maxQuantity: 0 };
+    }
+
+    if (requested > available) {
+      await port.send(telegramId, {
+        text: `i can sell up to ${available} right now.`,
+        keyboard: [[{ text: `buy ${available}`, data: cb.buy(available) }]],
+      });
+      return { ok: false, reason: 'unavailable', maxQuantity: available };
+    }
+
+    const quantity = Math.min(Math.max(Math.trunc(requested) || 1, 1), available);
+    const existingDraft = await getOrderDraft(db, telegramId);
+    if (existingDraft?.messageId) {
+      await port.delete(telegramId, existingDraft.messageId).catch(() => {});
+    }
+
+    const [maxQuantity, offerText] = await Promise.all([availableFor(), getOfferText(db)]);
+    const price = priceFor(quantity, deps.pricing);
+    const card = draftCard({
+      quantity,
+      unitPriceNgn: facts.unitPriceNgn,
+      totalNgn: price.totalNgn,
+      maxQuantity,
+      offerText,
+      facts,
+    });
+    const messageId = await port.send(telegramId, card);
+    await saveOrderDraft(db, { telegramId, quantity, messageId });
+    return { ok: true, quantity, totalNgn: price.totalNgn, maxQuantity };
+  }
+
+  /** The − and + buttons on the draft card. */
+  async function changeDraftQuantity(telegramId: number, messageId: number, requested: number): Promise<BuyOutcome> {
+    const draft = await getOrderDraft(db, telegramId);
+    if (!draft || draft.messageId !== messageId) {
+      return { ok: false, reason: 'stale' };
+    }
+    const maxQuantity = await availableFor();
+    if (maxQuantity < 1) {
+      return { ok: false, reason: 'unavailable', maxQuantity: 0 };
+    }
+    const quantity = Math.min(Math.max(Math.trunc(requested) || 1, 1), maxQuantity);
+    const offerText = await getOfferText(db);
+    const price = priceFor(quantity, deps.pricing);
+    const card = draftCard({
+      quantity,
+      unitPriceNgn: facts.unitPriceNgn,
+      totalNgn: price.totalNgn,
+      maxQuantity,
+      offerText,
+      facts,
+    });
+    await port.edit(telegramId, messageId, card);
+    await saveOrderDraft(db, { telegramId, quantity, messageId });
+    return { ok: true, quantity, totalNgn: price.totalNgn, maxQuantity };
+  }
+
+  /** The draft card cancel button. */
+  async function cancelDraft(telegramId: number, messageId: number): Promise<void> {
+    await deleteOrderDraft(db, telegramId);
+    await port.edit(telegramId, messageId, { text: 'cancelled', keyboard: undefined });
   }
 
   /**
-   * A different quantity means a different checkout: the unpaid order is cancelled and a new one
-   * takes its place (a payment that still lands on the old one is honoured, like any late payment).
-   * With editMessageId (the stepper) the same card and status message are edited in place.
+   * On [continue]:
+   * (1) run channel check
+   * (2) recheck availability and clamp
+   * (3) create ONE order with final quantity and ONE Bachs checkout session
+   * (4) edit the same message into payment card
+   * (5) delete the draft
    */
+  async function continueDraft(
+    telegramId: number,
+    messageId: number,
+  ): Promise<
+    | { ok: true; order: Order }
+    | { ok: false; reason: 'gate_required' | 'stale' | Exclude<CreateOrderResult, { ok: true }>['reason'] }
+  > {
+    const draft = await getOrderDraft(db, telegramId);
+    if (!draft || draft.messageId !== messageId) {
+      return { ok: false, reason: 'stale' };
+    }
+
+    const isMember = await checkGateMember(telegramId);
+    if (!isMember) {
+      const channelUrl = deps.gateChannelUrl ?? `https://t.me/${deps.gateChannel?.replace(/^@/, '') ?? 'samkieldevtg'}`;
+      const gate = gateCard(channelUrl);
+      await port.edit(telegramId, messageId, gate);
+      return { ok: false, reason: 'gate_required' };
+    }
+
+    const maxQuantity = await availableFor();
+    if (maxQuantity < 1) {
+      await port.edit(telegramId, messageId, {
+        text: "we're out of links right now. please check back soon.",
+        keyboard: [[supportButton(facts)]],
+      });
+      return { ok: false, reason: 'unavailable' };
+    }
+    const finalQuantity = Math.min(draft.quantity, maxQuantity);
+
+    const result = await createOrder(orderDeps(), { telegramId, quantity: finalQuantity });
+    if (!result.ok) {
+      await refuse(telegramId, result, finalQuantity);
+      return { ok: false, reason: result.reason };
+    }
+    const order = result.order;
+
+    const card = paymentCard({ order, facts });
+    await port.edit(telegramId, messageId, card);
+    await setOrderMessages(db, order.id, { summaryMessageId: messageId, payMessageId: messageId });
+    await deleteOrderDraft(db, telegramId);
+
+    return { ok: true, order };
+  }
+
+  /** Channel gate "i have joined ✅" button. */
+  async function recheckGate(telegramId: number, messageId: number, queryId: string): Promise<boolean> {
+    const isMember = await checkGateMember(telegramId);
+    if (!isMember) {
+      await port.answer(queryId, "you haven't joined yet", true);
+      return false;
+    }
+    await port.answer(queryId);
+    const draft = await getOrderDraft(db, telegramId);
+    const quantity = draft?.quantity ?? 1;
+    const [maxQuantity, offerText] = await Promise.all([availableFor(), getOfferText(db)]);
+    const price = priceFor(quantity, deps.pricing);
+    const card = draftCard({
+      quantity,
+      unitPriceNgn: facts.unitPriceNgn,
+      totalNgn: price.totalNgn,
+      maxQuantity,
+      offerText,
+      facts,
+    });
+    await port.edit(telegramId, messageId, card);
+    await saveOrderDraft(db, { telegramId, quantity, messageId });
+    return true;
+  }
+
+  /** Legacy / order stepper helper. */
   async function replaceOrder(old: Order, requested: number, editMessageId: number | undefined): Promise<BuyOutcome> {
     const chat = old.telegramId;
     const available = await availableFor(old);
@@ -290,7 +471,7 @@ export function createFlows(deps: FlowDeps) {
         await port.edit(chat, editMessageId, summaryCard({ order: old, maxQuantity: available, offerText, facts }));
         return okOutcome(old, available);
       }
-      return okOutcome(old, await moveCard(old));
+      return okOutcome(old, await movePaymentCard(old));
     }
 
     const cancelled = await cancelOwnOrder(db, chat, old.id);
@@ -303,7 +484,6 @@ export function createFlows(deps: FlowDeps) {
     const order = result.order;
 
     if (editMessageId && old.summaryMessageId === editMessageId) {
-      // Hand the chat messages over to the new order, then redraw them for it.
       await setOrderMessages(db, old.id, { summaryMessageId: null, payMessageId: null, statusMessageId: null });
       await setOrderMessages(db, order.id, {
         summaryMessageId: old.summaryMessageId,
@@ -312,18 +492,21 @@ export function createFlows(deps: FlowDeps) {
       });
       const [maxQuantity, offerText] = await Promise.all([availableFor(order), getOfferText(db)]);
       const result = await port.edit(chat, editMessageId, summaryCard({ order, maxQuantity, offerText, facts }));
-      if (result !== 'ok') return okOutcome(order, await moveCard({ ...order, summaryMessageId: null }));
+      if (result !== 'ok') return okOutcome(order, await movePaymentCard({ ...order, summaryMessageId: null }));
       if (old.statusMessageId) await port.edit(chat, old.statusMessageId, renderStatus(order, facts));
       return okOutcome(order, maxQuantity);
     }
 
-    // From a command or the agent: retire the old messages and start fresh ones below.
     orderChanged(cancelled.id);
     return okOutcome(order, await presentOrder(order));
   }
 
-  /** The − and + buttons. */
+  /** The − and + buttons (supports draft or order). */
   async function changeQuantity(telegramId: number, messageId: number, orderId: string, target: number): Promise<BuyOutcome> {
+    const draft = await getOrderDraft(db, telegramId);
+    if (draft && draft.messageId === messageId) {
+      return changeDraftQuantity(telegramId, messageId, target);
+    }
     const order = await findOwnOrder(db, telegramId, orderId);
     if (!order || order.status !== 'awaiting_payment' || order.summaryMessageId !== messageId) {
       return { ok: false, reason: 'stale' };
@@ -332,9 +515,14 @@ export function createFlows(deps: FlowDeps) {
   }
 
   /** The card's cancel button. */
-  async function cancelFromCard(telegramId: number, orderId: string): Promise<boolean> {
+  async function cancelFromCard(telegramId: number, orderId: string, messageId?: number): Promise<boolean> {
     const cancelled = await cancelOwnOrder(db, telegramId, orderId);
-    if (cancelled) orderChanged(cancelled.id);
+    if (cancelled) {
+      orderChanged(cancelled.id);
+      if (messageId) {
+        await port.edit(telegramId, messageId, { text: 'cancelled', keyboard: undefined });
+      }
+    }
     return cancelled !== undefined;
   }
 
@@ -511,6 +699,10 @@ export function createFlows(deps: FlowDeps) {
 
   return {
     startBuy,
+    changeDraftQuantity,
+    cancelDraft,
+    continueDraft,
+    recheckGate,
     changeQuantity,
     cancelFromCard,
     cancelPending,

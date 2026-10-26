@@ -16,7 +16,7 @@ export async function createTestDb() {
   return {
     db: db as unknown as Db,
     reset: async () => {
-      await db.execute(sql`truncate events, order_items, orders, messages, settings, leads, proof_items, users restart identity cascade`);
+      await db.execute(sql`truncate events, order_items, orders, order_drafts, messages, settings, leads, proof_items, users restart identity cascade`);
     },
     close: () => client.close(),
   };

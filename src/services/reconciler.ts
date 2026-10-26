@@ -6,7 +6,7 @@ import type { Db } from '../db/client.js';
 import { events, orders } from '../db/schema.js';
 import type { Logger } from '../util/logger.js';
 import type { Notify } from './notifier.js';
-import { expireUnpaidOrders, holdPayment, markPaid, reservedUnits } from './orders.js';
+import { deleteOldOrderDrafts, expireUnpaidOrders, holdPayment, markPaid, reservedUnits } from './orders.js';
 import { paymentProblem, type PaymentProvider } from './payments.js';
 import type { ResellerClient } from './reseller.js';
 import { getSetting, setSetting } from './settings.js';
@@ -163,6 +163,7 @@ export function createReconciler(deps: ReconcilerDeps) {
     running.orders = true;
     try {
       await step('expire', expire);
+      await step('clean old drafts', async () => deleteOldOrderDrafts(db, new Date(now().getTime() - 24 * 60 * 60_000)));
       await step('nudges', deps.sendNudges);
       await step('verify stale checkouts', verifyStale);
       await step('recover fulfilment', recover);

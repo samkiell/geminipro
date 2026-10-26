@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFlows, type FlowDeps } from '../src/bot/flows.js';
-import { orderItems, orders } from '../src/db/schema.js';
+import { orderDrafts, orderItems, orders } from '../src/db/schema.js';
 import { buildServer } from '../src/server.js';
 import { verifyWebhookSignature, type CheckoutSession, type CreateCheckoutInput } from '../src/services/bachs.js';
 import { createFulfilment } from '../src/services/fulfilment.js';
@@ -71,100 +71,137 @@ async function latestOrder() {
   return all.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? order;
 }
 
-describe('buying', () => {
-  it('/buy shows the summary card and a live status message, and stores their ids', async () => {
+describe('buying and draft cart', () => {
+  it('/buy shows the draft card, creates an order_draft row, and creates no order row', async () => {
     const f = flows();
     const outcome = await f.startBuy(BUYER, 2);
     expect(outcome).toMatchObject({ ok: true, quantity: 2, totalNgn: 7000, maxQuantity: 10 });
 
     const order = await latestOrder();
-    expect(order?.orderNo).toMatch(/^GP-\d{4,}$/);
-    expect(order?.summaryMessageId).toBe(tg.sent[0]?.id);
-    expect(order?.payMessageId).toBe(tg.sent[0]?.id);
-    expect(order?.statusMessageId).toBe(tg.sent[1]?.id);
+    expect(order).toBeUndefined(); // No order row created!
+    expect(checkouts).toHaveLength(0); // No checkout created!
+
+    const draft = await testDb.db.select().from(orderDrafts).where(eq(orderDrafts.telegramId, BUYER));
+    expect(draft).toHaveLength(1);
+    expect(draft[0]?.quantity).toBe(2);
+    expect(draft[0]?.messageId).toBe(tg.sent[0]?.id);
+
+    expect(tg.sent).toHaveLength(1); // One response rule: only the draft card
     expect(tg.sent[0]?.text).toContain('how many links?');
-    expect(tg.buttons(order?.summaryMessageId).map((b) => b.text)).toEqual(['−', '2', '+', 'pay · ₦7,000 + fee', 'cancel']);
-    expect(tg.sent[1]?.text).toContain('⏳ waiting for payment');
-    expect(checkouts).toHaveLength(1);
+    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['−', '2', '+', 'continue · ₦7,000 + fee', 'cancel']);
   });
 
-  it('the stepper replaces the order but edits the same card and status message', async () => {
+  it('tapping + five times edits the same message and consumes zero order numbers until continue', async () => {
     const f = flows();
     await f.startBuy(BUYER, 1);
-    const first = await latestOrder();
-    const cardId = first?.summaryMessageId ?? 0;
+    const draftMsgId = tg.sent[0]?.id ?? 0;
 
-    const outcome = await f.changeQuantity(BUYER, cardId, first?.id ?? '', 3);
-    expect(outcome).toMatchObject({ ok: true, quantity: 3, totalNgn: 10_500 });
+    // Tap + five times (quantities 2, 3, 4, 5, 6)
+    for (let q = 2; q <= 6; q++) {
+      const outcome = await f.changeDraftQuantity(BUYER, draftMsgId, q);
+      expect(outcome).toMatchObject({ ok: true, quantity: q, totalNgn: q * 3500 });
+    }
 
-    const second = await latestOrder();
-    expect(second?.id).not.toBe(first?.id);
-    expect((await getOrder(testDb.db, first?.id ?? '')).status).toBe('cancelled');
-    expect(second).toMatchObject({ summaryMessageId: cardId, statusMessageId: first?.statusMessageId, quantity: 3 });
-    expect(tg.sent).toHaveLength(2); // nothing new: both messages were edited in place
-    expect(tg.get(cardId)?.text).toContain('how many links?');
-    expect(tg.buttons(cardId).map((b) => b.text)).toEqual(['−', '3', '+', 'pay · ₦10,500 + fee', 'cancel']);
-    expect(tg.get(first?.statusMessageId)?.text).toContain(`order ${second?.orderNo}`);
+    // Still no order rows!
+    const ordersBefore = await testDb.db.select().from(orders).where(eq(orders.telegramId, BUYER));
+    expect(ordersBefore).toHaveLength(0);
+    expect(checkouts).toHaveLength(0);
+    expect(tg.sent).toHaveLength(1); // edited in place
+    expect(tg.get(draftMsgId)?.text).toContain('how many links?');
+    expect(tg.buttons(draftMsgId).map((b) => b.text)).toEqual(['−', '6', '+', 'continue · ₦21,000 + fee', 'cancel']);
 
-    // the old order's buttons are stale now
-    expect(await f.changeQuantity(BUYER, cardId, first?.id ?? '', 2)).toEqual({ ok: false, reason: 'stale' });
+    // Now tap continue: exactly ONE order row and ONE checkout are created
+    const continueResult = await f.continueDraft(BUYER, draftMsgId);
+    expect(continueResult.ok).toBe(true);
+
+    const ordersAfter = await testDb.db.select().from(orders).where(eq(orders.telegramId, BUYER));
+    expect(ordersAfter).toHaveLength(1);
+    expect(ordersAfter[0]?.orderNo).toMatch(/^GP-\d{4,}$/);
+    expect(ordersAfter[0]?.quantity).toBe(6);
+    expect(ordersAfter[0]?.amountNgn).toBe(21_000);
+    expect(checkouts).toHaveLength(1);
+
+    // Draft card was edited into payment card, draft row deleted
+    expect(tg.sent).toHaveLength(1);
+    expect(tg.get(draftMsgId)?.text).toContain(`order ${ordersAfter[0]?.orderNo} · 6 links`);
+    expect(tg.buttons(draftMsgId).map((b) => b.text)).toEqual(['pay now', 'cancel']);
+    const draftsAfter = await testDb.db.select().from(orderDrafts).where(eq(orderDrafts.telegramId, BUYER));
+    expect(draftsAfter).toHaveLength(0);
+  });
+
+  it('abandoned drafts consume zero order numbers', async () => {
+    const f = flows();
+    await f.startBuy(BUYER, 3);
+    const ordersList = await testDb.db.select().from(orders).where(eq(orders.telegramId, BUYER));
+    expect(ordersList).toHaveLength(0);
+  });
+
+  it('cancel on draft card edits in place to cancelled', async () => {
+    const f = flows();
+    await f.startBuy(BUYER, 2);
+    const draftMsgId = tg.sent[0]?.id ?? 0;
+    await f.cancelDraft(BUYER, draftMsgId);
+
+    expect(tg.get(draftMsgId)?.text).toBe('cancelled');
+    expect(tg.buttons(draftMsgId)).toHaveLength(0);
+    const drafts = await testDb.db.select().from(orderDrafts).where(eq(orderDrafts.telegramId, BUYER));
+    expect(drafts).toHaveLength(0);
+  });
+
+  it('buying again when an active unpaid order exists shows that same payment card moved down', async () => {
+    const f = flows();
+    await f.startBuy(BUYER, 2);
+    const draftMsgId = tg.sent[0]?.id ?? 0;
+    await f.continueDraft(BUYER, draftMsgId);
+    const firstOrder = await latestOrder();
+
+    // Now buyer runs /buy again while first order is still unpaid
+    await f.startBuy(BUYER, 1);
+    const ordersAfter = await testDb.db.select().from(orders).where(eq(orders.telegramId, BUYER));
+    expect(ordersAfter).toHaveLength(1); // Still exactly one order!
+    expect(ordersAfter[0]?.id).toBe(firstOrder?.id);
+
+    // Old payment card deleted (best effort) and moved down
+    expect(tg.deleted).toContain(draftMsgId);
+    const newCardId = ordersAfter[0]?.summaryMessageId;
+    expect(newCardId).not.toBe(draftMsgId);
+    expect(tg.get(newCardId)?.text).toContain(`order ${firstOrder?.orderNo}`);
   });
 
   it('the stepper never goes past what is available', async () => {
     stock = 2;
     const f = flows();
     await f.startBuy(BUYER, 1);
-    const first = await latestOrder();
-    const outcome = await f.changeQuantity(BUYER, first?.summaryMessageId ?? 0, first?.id ?? '', 5);
+    const draftMsgId = tg.sent[0]?.id ?? 0;
+    const outcome = await f.changeDraftQuantity(BUYER, draftMsgId, 5);
     expect(outcome).toMatchObject({ ok: true, quantity: 2, maxQuantity: 2 });
-    const plus = tg.buttons(first?.summaryMessageId).find((b) => b.text === '+');
+    const plus = tg.buttons(draftMsgId).find((b) => b.text === '+');
     expect(plus && 'data' in plus && plus.data).toBe('n');
   });
 
-  it('cancel collapses the card to one line with no buttons', async () => {
+  it('payment and expiry retire the payment card', async () => {
     const f = flows();
     await f.startBuy(BUYER, 1);
-    const order = await latestOrder();
-    expect(await f.cancelFromCard(BUYER, order?.id ?? '')).toBe(true);
-    await f.whenIdle();
-    expect(tg.get(order?.summaryMessageId)).toMatchObject({ text: 'cancelled' });
-    expect(tg.get(order?.summaryMessageId)?.keyboard).toBeUndefined();
-    expect(tg.get(order?.statusMessageId)?.text).toContain('cancelled.');
-    expect(await f.cancelFromCard(BUYER, order?.id ?? '')).toBe(false);
-  });
-
-  it('payment and expiry retire the card', async () => {
-    const f = flows();
-    await f.startBuy(BUYER, 1);
+    const msgId = tg.sent[0]?.id ?? 0;
+    await f.continueDraft(BUYER, msgId);
     const paidOrder = await latestOrder();
+
     await markPaid(testDb.db, paidOrder?.id ?? '');
     f.orderChanged(paidOrder?.id ?? '');
     await f.whenIdle();
-    expect(tg.get(paidOrder?.summaryMessageId)).toMatchObject({ text: `paid ✅ order ${paidOrder?.orderNo}` });
-    expect(tg.get(paidOrder?.summaryMessageId)?.keyboard).toBeUndefined();
-    expect(tg.get(paidOrder?.statusMessageId)?.text).toContain('✅ payment received');
+    expect(tg.get(msgId)?.text).toBe(`paid ✅ order ${paidOrder?.orderNo}`);
+    expect(tg.get(msgId)?.keyboard).toBeUndefined();
 
+    // Expiry test
     await f.startBuy(BUYER, 1);
+    const unpaidMsgId = tg.sent.at(-1)?.id ?? 0;
+    await f.continueDraft(BUYER, unpaidMsgId);
     const unpaid = await latestOrder();
     await testDb.db.update(orders).set({ expiresAt: new Date(0) }).where(eq(orders.id, unpaid?.id ?? ''));
     for (const o of await expireUnpaidOrders(testDb.db)) f.orderChanged(o.id);
     await f.whenIdle();
-    expect(tg.get(unpaid?.summaryMessageId)?.text).toBe('expired ⌛ send /buy to start again');
-    expect(tg.get(unpaid?.summaryMessageId)?.keyboard).toBeUndefined();
-  });
-
-  it('buying again with the same quantity moves the card down instead of making a new order', async () => {
-    const f = flows();
-    await f.startBuy(BUYER, 2);
-    const first = await latestOrder();
-    await f.startBuy(BUYER, 2);
-    const again = await latestOrder();
-    expect(again?.id).toBe(first?.id);
-    expect(tg.get(first?.summaryMessageId)).toBeUndefined();
-    expect(tg.deleted).toContain(first?.summaryMessageId);
-    expect(again?.summaryMessageId).not.toBe(first?.summaryMessageId);
-    expect(tg.buttons(again?.summaryMessageId).map((b) => b.text)).toContain('pay · ₦7,000 + fee');
-    expect(checkouts).toHaveLength(1);
+    expect(tg.get(unpaidMsgId)?.text).toBe('expired ⌛ send /buy to start again');
+    expect(tg.get(unpaidMsgId)?.keyboard).toBeUndefined();
   });
 
   it('says how many it can sell when there is not enough', async () => {
@@ -182,6 +219,100 @@ describe('buying', () => {
     await setOfferText(testDb.db, 'last 20 links left');
     await flows().startBuy(BUYER, 1);
     expect(tg.sent[0]?.text).toContain('🔥 last 20 links left');
+  });
+});
+
+describe('channel gate', () => {
+  const GATE = '@samkieldevtg';
+
+  it('member passes through continue without interruption', async () => {
+    tg.setChatMember(GATE, BUYER, 'member');
+    const f = flows({ gateChannel: GATE, gateChannelUrl: 'https://t.me/samkieldevtg' });
+    await f.startBuy(BUYER, 2);
+    const msgId = tg.sent[0]?.id ?? 0;
+
+    const result = await f.continueDraft(BUYER, msgId);
+    expect(result.ok).toBe(true);
+    expect(tg.get(msgId)?.text).toContain('order GP-');
+    expect(tg.buttons(msgId).map((b) => b.text)).toEqual(['pay now', 'cancel']);
+  });
+
+  it('non-member is stopped at continue, alerted if clicking joined without joining, and passes when joined', async () => {
+    tg.setChatMember(GATE, BUYER, 'left');
+    const f = flows({ gateChannel: GATE, gateChannelUrl: 'https://t.me/samkieldevtg' });
+    await f.startBuy(BUYER, 3);
+    const msgId = tg.sent[0]?.id ?? 0;
+
+    // Continue stops non-member with gate card
+    const result = await f.continueDraft(BUYER, msgId);
+    expect(result).toEqual({ ok: false, reason: 'gate_required' });
+    expect(tg.get(msgId)?.text).toBe('join our channel to continue 👇');
+    expect(tg.buttons(msgId).map((b) => b.text)).toEqual(['join channel', 'i have joined ✅']);
+
+    // Tapping "i have joined ✅" before actually joining alerts user
+    const recheck1 = await f.recheckGate(BUYER, msgId, 'query_1');
+    expect(recheck1).toBe(false);
+    expect(tg.answers.at(-1)).toEqual({ queryId: 'query_1', text: "you haven't joined yet", alert: true });
+
+    // Now user joins the channel
+    tg.setChatMember(GATE, BUYER, 'member');
+    const recheck2 = await f.recheckGate(BUYER, msgId, 'query_2');
+    expect(recheck2).toBe(true);
+    // Draft card restored with preserved quantity (3)
+    expect(tg.get(msgId)?.text).toContain('how many links?');
+    expect(tg.buttons(msgId).map((b) => b.text)).toEqual(['−', '3', '+', 'continue · ₦10,500 + fee', 'cancel']);
+  });
+
+  it('leaving channel after joining is caught at next purchase', async () => {
+    tg.setChatMember(GATE, BUYER, 'member');
+    const f = flows({ gateChannel: GATE, gateChannelUrl: 'https://t.me/samkieldevtg' });
+    await f.startBuy(BUYER, 1);
+    const msg1 = tg.sent[0]?.id ?? 0;
+    expect((await f.continueDraft(BUYER, msg1)).ok).toBe(true);
+
+    // Cancel that order to buy again
+    const ord = await latestOrder();
+    await f.cancelFromCard(BUYER, ord?.id ?? '', msg1);
+
+    // User leaves channel
+    tg.setChatMember(GATE, BUYER, 'left');
+    await f.startBuy(BUYER, 1);
+    const msg2 = tg.sent.at(-1)?.id ?? 0;
+    const res2 = await f.continueDraft(BUYER, msg2);
+    expect(res2).toEqual({ ok: false, reason: 'gate_required' });
+    expect(tg.get(msg2)?.text).toBe('join our channel to continue 👇');
+  });
+
+  it('getChatMember error fails open and alerts admin with 30m cooldown', async () => {
+    // Port with failing getChatMember
+    tg.port.getChatMember = async () => {
+      throw new Error('Telegram API timeout');
+    };
+    const f = flows({ gateChannel: GATE, gateChannelUrl: 'https://t.me/samkieldevtg' });
+    await f.startBuy(BUYER, 1);
+    const msgId = tg.sent[0]?.id ?? 0;
+
+    const result = await f.continueDraft(BUYER, msgId);
+    expect(result.ok).toBe(true); // Fails open!
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.title).toBe('channel gate check failed (failed open)');
+
+    // Immediate second call should not alert again due to 30m cooldown
+    await f.startBuy(999, 1);
+    const msg2 = tg.sent.at(-1)?.id ?? 0;
+    await f.continueDraft(999, msg2);
+    expect(alerts).toHaveLength(1); // Still 1 alert!
+  });
+
+  it('admins bypass the channel gate even if not in channel', async () => {
+    tg.setChatMember(GATE, BUYER, 'left');
+    const f = flows({ gateChannel: GATE, adminUserIds: [BUYER] });
+    await f.startBuy(BUYER, 1);
+    const msgId = tg.sent[0]?.id ?? 0;
+
+    const result = await f.continueDraft(BUYER, msgId);
+    expect(result.ok).toBe(true);
+    expect(tg.get(msgId)?.text).toContain('order GP-');
   });
 });
 
@@ -284,15 +415,14 @@ describe('acceptance: buy 3, pay, receive tap-to-copy links, find them in histor
       },
     });
 
-    // /buy, then + + to 3
+    // /buy, then + + to 3, then continue
     await f.startBuy(BUYER, 1);
-    let order = await latestOrder();
-    const cardId = order?.summaryMessageId ?? 0;
-    const statusId = order?.statusMessageId ?? 0;
-    await f.changeQuantity(BUYER, cardId, order?.id ?? '', 2);
-    order = await latestOrder();
-    await f.changeQuantity(BUYER, cardId, order?.id ?? '', 3);
-    order = await latestOrder();
+    const cardId = tg.sent[0]?.id ?? 0;
+    await f.changeDraftQuantity(BUYER, cardId, 2);
+    await f.changeDraftQuantity(BUYER, cardId, 3);
+    const continued = await f.continueDraft(BUYER, cardId);
+    expect(continued.ok).toBe(true);
+    const order = await latestOrder();
     expect(order).toMatchObject({ quantity: 3, amountNgn: 10_500, status: 'awaiting_payment' });
 
     // the buyer pays; Bachs calls the webhook
@@ -334,8 +464,12 @@ describe('acceptance: buy 3, pay, receive tap-to-copy links, find them in histor
     // the card lost its buttons, the status message became the receipt
     expect(tg.get(cardId)).toMatchObject({ text: `paid ✅ order ${order?.orderNo}` });
     expect(tg.get(cardId)?.keyboard).toBeUndefined();
-    expect(tg.get(statusId)?.text).toContain('✅ delivered');
-    expect(tg.get(statusId)?.text).toContain('receipt: 3 links · ₦10,500 paid + fee');
+    const deliveredOrder = await latestOrder();
+    const statusId = deliveredOrder?.statusMessageId;
+    if (statusId) {
+      expect(tg.get(statusId)?.text).toContain('✅ delivered');
+      expect(tg.get(statusId)?.text).toContain('receipt: 3 links · ₦10,500 paid + fee');
+    }
     expect((await getOrder(testDb.db, order?.id ?? '')).status).toBe('delivered');
 
     // history shows it; opening it offers the links again

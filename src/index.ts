@@ -105,6 +105,9 @@ async function main(): Promise<void> {
     salesCutoff: config.SALES_CUTOFF,
     returnUrl: botLink(config),
     notify,
+    gateChannel: config.GATE_CHANNEL,
+    gateChannelUrl: config.GATE_CHANNEL_URL,
+    adminUserIds: config.ADMIN_TELEGRAM_IDS,
   });
   const fulfilment = createFulfilment({
     db,

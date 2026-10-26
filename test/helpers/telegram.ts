@@ -21,11 +21,13 @@ export function fakePort() {
   const messages = new Map<number, ChatMessage>();
   const sent: ChatMessage[] = [];
   const edits: { id: number; text: string }[] = [];
-  const answers: { queryId: string; text: string | undefined }[] = [];
+  const answers: { queryId: string; text: string | undefined; alert?: boolean }[] = [];
   const albums: { chatId: number; photos: AlbumPhoto[]; caption: string }[] = [];
   const blocked = new Set<number>();
   const deleted: number[] = [];
+  const members = new Map<string, { status: string; isMember?: boolean }>();
   let failSends = 0;
+  let failChatMember = false;
   let nextFile = 1;
 
   const port: TelegramPort = {
@@ -60,12 +62,17 @@ export function fakePort() {
       messages.set(id, keyboard ? { ...rest, keyboard } : rest);
       return 'ok';
     },
-    async answer(queryId, text) {
-      answers.push({ queryId, text });
+    async answer(queryId, text, alert) {
+      answers.push({ queryId, text, alert });
     },
     async delete(_chatId, messageId) {
       messages.delete(messageId);
       deleted.push(messageId);
+    },
+    async getChatMember(channel, userId) {
+      if (failChatMember) throw new Error('telegram request failed: chat member error');
+      const key = `${channel}:${userId}`;
+      return members.get(key) ?? { status: 'member' };
     },
   };
 
@@ -77,6 +84,14 @@ export function fakePort() {
     answers,
     albums,
     deleted,
+    members,
+    setChatMember: (channel: string, userId: number, member: { status: string; isMember?: boolean } | string) => {
+      const obj = typeof member === 'string' ? { status: member } : member;
+      members.set(`${channel}:${userId}`, obj);
+    },
+    failNextChatMember: (fail: boolean) => {
+      failChatMember = fail;
+    },
     /** Current state of a message. */
     get: (id: number | null | undefined) => (id ? messages.get(id) : undefined),
     block: (chatId: number) => blocked.add(chatId),

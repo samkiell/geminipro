@@ -40,8 +40,8 @@ const MAX_TOKENS = 160;
 
 /** Reasoning models spend completion tokens thinking before the JSON: give them room for both. */
 function modelParams(model: string): Partial<CompletionParams> {
-  if (model.startsWith('openai/gpt-oss')) return { reasoning_effort: 'low', max_completion_tokens: MAX_TOKENS + 320 };
-  if (model.startsWith('qwen/')) return { reasoning_format: 'hidden', max_completion_tokens: MAX_TOKENS + 480 };
+  if (model.startsWith('openai/gpt-oss')) return { reasoning_effort: 'low', max_completion_tokens: 1024 };
+  if (model.startsWith('qwen/')) return { reasoning_format: 'hidden', max_completion_tokens: 1024 };
   return { max_completion_tokens: MAX_TOKENS };
 }
 

@@ -42,9 +42,11 @@ export interface TelegramPort {
   /** Replaces only the buttons (none removes them). Never throws. */
   setButtons(chatId: number, messageId: number, keyboard?: Keyboard): Promise<EditOutcome>;
   /** Answers a button tap. Never throws. */
-  answer(callbackQueryId: string, text?: string): Promise<void>;
+  answer(callbackQueryId: string, text?: string, alert?: boolean): Promise<void>;
   /** Deletes a message. Never throws (best effort). */
   delete(chatId: number, messageId: number): Promise<void>;
+  /** Checks membership in a channel. Throws on error so caller can fail open. */
+  getChatMember(channel: string, userId: number): Promise<{ status: string; isMember?: boolean } | undefined>;
 }
 
 export function escapeHtml(text: string): string {
@@ -133,11 +135,18 @@ export function grammyPort(api: Api): TelegramPort {
         return editOutcome(err);
       }
     },
-    async answer(callbackQueryId, text) {
-      await api.answerCallbackQuery(callbackQueryId, text ? { text } : {}).catch(() => {});
+    async answer(callbackQueryId, text, alert) {
+      await api.answerCallbackQuery(callbackQueryId, text ? { text, show_alert: alert } : {}).catch(() => {});
     },
     async delete(chatId, messageId) {
       await api.deleteMessage(chatId, messageId).catch(() => {});
+    },
+    async getChatMember(channel, userId) {
+      const member = await api.getChatMember(channel, userId);
+      return {
+        status: member.status,
+        isMember: member.status === 'restricted' ? (member as { is_member?: boolean }).is_member : undefined,
+      };
     },
   };
 }

@@ -1,7 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFlows } from '../src/bot/flows.js';
-import { orderItems, orders } from '../src/db/schema.js';
+import { orderDrafts, orderItems, orders } from '../src/db/schema.js';
 import type { CheckoutSession } from '../src/services/bachs.js';
 import { createFulfilment, itemIdempotencyKey } from '../src/services/fulfilment.js';
 import { createNotifier, type Alert } from '../src/services/notifier.js';
@@ -136,12 +136,29 @@ describe('reconciler', () => {
   it('expires unpaid orders and retires their cards', async () => {
     const { reconciler, flows } = setup();
     await flows.startBuy(42, 1);
+    await flows.continueDraft(42, tg.sent[0]?.id ?? 0);
     const [order] = await testDb.db.select().from(orders).where(eq(orders.telegramId, 42));
     await testDb.db.update(orders).set({ expiresAt: new Date(0) }).where(eq(orders.id, order?.id ?? ''));
     await reconciler.runOrders();
     await flows.whenIdle();
     expect((await getOrder(testDb.db, order?.id ?? '')).status).toBe('expired');
     expect(tg.get(order?.summaryMessageId)?.keyboard).toBeUndefined();
+  });
+
+  it('deletes draft rows older than 24 hours', async () => {
+    const { reconciler, flows } = setup();
+    await flows.startBuy(42, 2);
+    const before = await testDb.db.select().from(orderDrafts).where(eq(orderDrafts.telegramId, 42));
+    expect(before).toHaveLength(1);
+
+    await testDb.db
+      .update(orderDrafts)
+      .set({ updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) })
+      .where(eq(orderDrafts.telegramId, 42));
+
+    await reconciler.runOrders();
+    const after = await testDb.db.select().from(orderDrafts).where(eq(orderDrafts.telegramId, 42));
+    expect(after).toHaveLength(0);
   });
 
   it('catches a payment whose webhook never arrived', async () => {

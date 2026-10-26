@@ -78,8 +78,8 @@ describe('decide: one call, one JSON decision', () => {
   });
 
   it('a model slower than the timeout loses to the next one', async () => {
-    groq.respond((req) => (req.model === 'fast' ? { delayMs: 400, then: { content: decisionJson({}) } } : { content: decisionJson({ reply: 'from smart' }) }));
-    const result = await ask(pool(['fast', 'smart'], 150), 'hello there friend');
+    groq.respond((req) => (req.model === 'fast' ? { delayMs: 600, then: { content: decisionJson({}) } } : { content: decisionJson({ reply: 'from smart' }) }));
+    const result = await ask(pool(['fast', 'smart'], 250), 'hello there friend');
     expect(result).toMatchObject({ ok: true, model: 'smart', decision: { reply: 'from smart' } });
   });
 

@@ -215,7 +215,7 @@ export class ModelPool {
 
   private record(call: CallRecord, err?: unknown): void {
     if (call.ok) this.opts.logger.info(call, 'groq call');
-    else this.opts.logger.warn({ ...call, err: (err as Error)?.message?.slice(0, 200) }, 'groq call failed');
+    else this.opts.logger.warn({ ...call, err: (err as Error)?.message?.slice(0, 1000) }, 'groq call failed');
     this.opts.onCall?.(call);
   }
 

@@ -178,7 +178,17 @@ export const proofItems = pgTable('proof_items', {
   createdAt: timestamptz('created_at').notNull().defaultNow(),
 });
 
+// Draft carts before payment (Prompt D section 2). Order numbers are only created when continuing.
+export const orderDrafts = pgTable('order_drafts', {
+  telegramId: bigint('telegram_id', { mode: 'number' }).primaryKey(),
+  quantity: integer('quantity').notNull().default(1),
+  messageId: integer('message_id'),
+  updatedAt: timestamptz('updated_at').notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type OrderStatus = (typeof orderStatus.enumValues)[number];
 export type OrderItem = typeof orderItems.$inferSelect;
+export type OrderDraft = typeof orderDrafts.$inferSelect;
+export type NewOrderDraft = typeof orderDrafts.$inferInsert;

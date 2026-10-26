@@ -92,6 +92,14 @@ const envSchema = z.object({
   // Optional: a self hosted ntfy server instead of https://ntfy.sh.
   NTFY_SERVER: z.url().optional(),
 
+  // Channel gate (Prompt D section 3)
+  GATE_CHANNEL: z.string().default('@samkieldevtg'),
+  GATE_CHANNEL_URL: z.url().default('https://t.me/samkieldevtg'),
+  MESSAGE_EFFECT_CONFETTI: z.string().default('5046509860389126442'),
+  REFERRAL_THRESHOLD: int().positive().default(3),
+  REFERRAL_MAX_REWARDS: int().positive().default(3),
+  BACHS_SESSION_TTL_MINUTES: int().positive().default(15),
+
   // ISO time with an explicit offset, e.g. 2026-10-29T19:30:00+01:00. Unset means no cutoff.
   SALES_CUTOFF: z.iso
     .datetime({ offset: true, error: 'expected an ISO time with offset like 2026-10-29T19:30:00+01:00' })

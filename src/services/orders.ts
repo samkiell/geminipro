@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { orderItems, orders, users, type Order, type OrderItem, type OrderStatus } from '../db/schema.js';
+import { orderDrafts, orderItems, orders, users, type Order, type OrderDraft, type OrderItem, type OrderStatus } from '../db/schema.js';
 import type { PaymentProvider } from './payments.js';
 import { priceFor, type Price, type PricingConfig } from './pricing.js';
 import type { ResellerClient } from './reseller.js';
@@ -456,4 +456,48 @@ export async function cancelOwnOrder(db: Db, telegramId: number, orderId: string
 function isUniqueViolation(err: unknown): boolean {
   const code = (e: unknown) => (e as { code?: unknown } | undefined)?.code;
   return code(err) === '23505' || code((err as { cause?: unknown } | undefined)?.cause) === '23505';
+}
+
+// ---------------------------------------------------------------- draft carts (Prompt D section 2)
+
+export async function getOrderDraft(db: Db, telegramId: number): Promise<OrderDraft | undefined> {
+  const [draft] = await db.select().from(orderDrafts).where(eq(orderDrafts.telegramId, telegramId));
+  return draft;
+}
+
+export async function saveOrderDraft(
+  db: Db,
+  { telegramId, quantity, messageId }: { telegramId: number; quantity: number; messageId?: number },
+): Promise<OrderDraft> {
+  const [draft] = await db
+    .insert(orderDrafts)
+    .values({
+      telegramId,
+      quantity,
+      messageId,
+      updatedAt: sql`now()`,
+    })
+    .onConflictDoUpdate({
+      target: orderDrafts.telegramId,
+      set: {
+        quantity,
+        ...(messageId !== undefined && { messageId }),
+        updatedAt: sql`now()`,
+      },
+    })
+    .returning();
+  return draft!;
+}
+
+export async function deleteOrderDraft(db: Db, telegramId: number): Promise<void> {
+  await db.delete(orderDrafts).where(eq(orderDrafts.telegramId, telegramId));
+}
+
+/** Draft rows older than 24 hours are deleted by the reconciler (Prompt D section 2). */
+export async function deleteOldOrderDrafts(db: Db, olderThan: Date): Promise<number> {
+  const deleted = await db
+    .delete(orderDrafts)
+    .where(sql`${orderDrafts.updatedAt} < ${olderThan}`)
+    .returning({ telegramId: orderDrafts.telegramId });
+  return deleted.length;
 }

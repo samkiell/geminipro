@@ -168,11 +168,36 @@ export function registerBot(bot: Bot, deps: BotDeps): void {
         if (!result.ok && result.reason === 'stale' && messageId) await port.setButtons(telegramId, messageId);
         return;
       }
+      case 'dq': {
+        if (!messageId) return stale();
+        const result = await flows.changeDraftQuantity(telegramId, messageId, Number(a));
+        if (!result.ok && result.reason === 'stale') return stale();
+        await port.answer(queryId);
+        return;
+      }
+      case 'cp': {
+        if (!messageId) return stale();
+        const result = await flows.continueDraft(telegramId, messageId);
+        if (!result.ok && result.reason === 'stale') return stale();
+        await port.answer(queryId);
+        return;
+      }
+      case 'cd': {
+        if (!messageId) return stale();
+        await port.answer(queryId, 'cancelled');
+        await flows.cancelDraft(telegramId, messageId);
+        return;
+      }
+      case 'gj': {
+        if (!messageId) return stale();
+        await flows.recheckGate(telegramId, messageId, queryId);
+        return;
+      }
       case 'x': {
         const order = await owned(a);
         if (!order || !UNPAID_OPEN.includes(order.status)) return stale();
         await port.answer(queryId, 'cancelled');
-        await flows.cancelFromCard(telegramId, a);
+        await flows.cancelFromCard(telegramId, a, messageId);
         return;
       }
       case 'h':

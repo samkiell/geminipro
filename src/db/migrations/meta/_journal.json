@@ -50,6 +50,13 @@
       "when": 1793009763022,
       "tag": "0006_proof_items",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793014716805,
+      "tag": "0007_nasty_jack_flag",
+      "breakpoints": true
     }
   ]
 }

@@ -50,6 +50,12 @@ describe('loadConfig', () => {
     expect(config.BACHS_WEBHOOK_SECRET).toBeUndefined();
     expect(config.TELEGRAM_BOT_USERNAME).toBe('geminiprosamkiel_bot');
     expect(botLink(config)).toBe('https://t.me/geminiprosamkiel_bot');
+    expect(config.GATE_CHANNEL).toBe('@samkieldevtg');
+    expect(config.GATE_CHANNEL_URL).toBe('https://t.me/samkieldevtg');
+    expect(config.MESSAGE_EFFECT_CONFETTI).toBe('5046509860389126442');
+    expect(config.REFERRAL_THRESHOLD).toBe(3);
+    expect(config.REFERRAL_MAX_REWARDS).toBe(3);
+    expect(config.BACHS_SESSION_TTL_MINUTES).toBe(15);
   });
 
   it('accepts a bot username with or without the @', () => {

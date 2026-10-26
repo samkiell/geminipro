@@ -164,11 +164,11 @@ describe('commands', () => {
     expect(user).toMatchObject({ username: 'samkieldev', firstName: 'Sam', blocked: false });
   });
 
-  it('/buy 3 shows the summary card for 3 and the status message', async () => {
+  it('/buy 3 shows the draft card for 3', async () => {
     await makeBot().handleUpdate(message('/buy 3'));
     expect(tg.sent[0]?.text).toContain('how many links?');
-    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['−', '3', '+', 'pay · ₦10,500 + fee', 'cancel']);
-    expect(tg.sent[1]?.text).toContain('⏳ waiting for payment');
+    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['−', '3', '+', 'continue · ₦10,500 + fee', 'cancel']);
+    expect(tg.sent).toHaveLength(1);
   });
 
   it('/history and /help', async () => {
@@ -288,7 +288,7 @@ describe('chat: one model call at most, often none', () => {
     groq.respond(() => ({ content: 'not json at all' }));
     await bot.handleUpdate(message('can i get two of them please'));
     expect(tg.sent[0]?.text).toContain('how many links?');
-    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['−', '2', '+', 'pay · ₦7,000 + fee', 'cancel']);
+    expect(tg.buttons(tg.sent[0]?.id).map((b) => b.text)).toEqual(['−', '2', '+', 'continue · ₦7,000 + fee', 'cancel']);
     groq.respond(() => ({ status: 429, headers: { 'retry-after': '60' } }));
     await bot.handleUpdate(message('blah blah something random'));
     expect(tg.buttons(tg.sent.at(-1)?.id).map((b) => b.text)).toEqual(['buy a link', 'price', 'see proof', 'support']);
@@ -296,7 +296,7 @@ describe('chat: one model call at most, often none', () => {
     const calls = modelCalls();
     await bot.handleUpdate(message('i never got my link from you'));
     expect(modelCalls()).toBe(calls);
-    expect(tg.sent.at(-1)?.text).toBe('your orders. tap one to see it.');
+    expect(tg.sent.at(-1)?.text).toBe("you haven't bought anything yet. tap below to get your first link.");
     expect(fallbacks).toEqual(['invalid', 'rate_limited', 'rate_limited']);
   });
 
@@ -339,10 +339,12 @@ describe('button taps', () => {
     const plus = tg.buttons(cardId).find((b) => b.text === '+');
     await bot.handleUpdate(tap(plus && 'data' in plus ? plus.data : '', cardId));
     expect(tg.get(cardId)?.text).toContain('how many links?');
-    expect(tg.buttons(cardId).map((b) => b.text)).toEqual(['−', '2', '+', 'pay · ₦7,000 + fee', 'cancel']);
-    expect(tg.sent).toHaveLength(2);
+    expect(tg.buttons(cardId).map((b) => b.text)).toEqual(['−', '2', '+', 'continue · ₦7,000 + fee', 'cancel']);
+    expect(tg.sent).toHaveLength(1);
 
-    // the same + again belongs to the replaced order now
+    // Cancel draft to test expired button tap
+    const cancel = tg.buttons(cardId).find((b) => b.text === 'cancel');
+    await bot.handleUpdate(tap(cancel && 'data' in cancel ? cancel.data : '', cardId));
     await bot.handleUpdate(tap(plus && 'data' in plus ? plus.data : '', cardId));
     expect(tg.answers.at(-1)?.text).toBe('this button has expired');
   });

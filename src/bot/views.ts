@@ -26,6 +26,7 @@ const WAT_TIME = new Intl.DateTimeFormat('en-GB', {
 });
 export const watDate = (d: Date) => WAT_DATE.format(d).toLowerCase();
 export const watDateTime = (d: Date) => `${watDate(d)}, ${WAT_TIME.format(d)} wat`;
+export const watTime = (d: Date) => WAT_TIME.format(d);
 
 // Callback data, all under Telegram's 64 bytes. Ids in it are never trusted: handlers re-check
 // that the order belongs to whoever tapped.
@@ -33,9 +34,11 @@ export const cb = {
   noop: 'n',
   buy: (quantity: number) => `b:${quantity}`,
   qty: (orderId: string, quantity: number) => `q:${orderId}:${quantity}`,
+  draftQty: (quantity: number) => `dq:${quantity}`,
   // Buyer taps [continue] on the draft card to create the real order and checkout.
-  continuePay: (orderId: string) => `cp:${orderId}`,
+  continuePay: (orderId?: string) => (orderId ? `cp:${orderId}` : 'cp'),
   cancel: (orderId: string) => `x:${orderId}`,
+  cancelDraft: 'cd',
   history: (page: number) => `h:${page}`,
   order: (orderId: string, page: number) => `o:${orderId}:${page}`,
   links: (orderId: string) => `l:${orderId}`,
@@ -50,7 +53,7 @@ export const cb = {
   activateYes: (itemId: string) => `v:y:${itemId}`,
   activateNo: (itemId: string) => `v:n:${itemId}`,
   // Channel gate: after joining, buyer taps to recheck.
-  gateJoined: (orderId: string) => `gj:${orderId}`,
+  gateJoined: 'gj',
 };
 
 export function supportUrl(intl: string, orderNo?: string): string {
@@ -118,6 +121,74 @@ export function payLabel(order: Pick<Order, 'amountNgn'>, facts: UiFacts): strin
   return facts.grossUp ? naira(order.amountNgn) : `${naira(order.amountNgn)} + fee`;
 }
 
+export interface DraftCardInput {
+  quantity: number;
+  unitPriceNgn: number;
+  totalNgn: number;
+  maxQuantity: number;
+  offerText: string;
+  facts: UiFacts;
+}
+
+export function draftCard({ quantity: q, unitPriceNgn, totalNgn, maxQuantity, offerText, facts }: DraftCardInput): OutMessage {
+  const keyboard: Keyboard = [
+    [
+      { text: '−', data: q > 1 ? cb.draftQty(q - 1) : cb.noop },
+      { text: `${q}`, data: cb.noop },
+      { text: '+', data: q < maxQuantity ? cb.draftQty(q + 1) : cb.noop },
+    ],
+    [{ text: `continue · ${facts.grossUp ? naira(totalNgn) : `${naira(totalNgn)} + fee`}`, data: cb.continuePay() }],
+    [{ text: 'cancel', data: cb.cancelDraft }],
+  ];
+  return {
+    text: [
+      'how many links?',
+      `${naira(unitPriceNgn)} each + fee`,
+      '⚠️ no refund if a link expires before you activate it',
+      `🔥 ${offerText}`,
+    ].join('\n'),
+    keyboard,
+  };
+}
+
+export interface PaymentCardInput {
+  order: Pick<Order, 'id' | 'orderNo' | 'quantity' | 'amountNgn' | 'checkoutUrl' | 'expiresAt'>;
+  facts: UiFacts;
+  now?: Date;
+}
+
+export function paymentCard({ order, facts, now = new Date() }: PaymentCardInput): OutMessage {
+  const expiresAt = order.expiresAt ?? new Date(now.getTime() + 15 * 60 * 1000);
+  const total = facts.grossUp ? naira(order.amountNgn) : `${naira(order.amountNgn)} + fee`;
+  const timeWat = watTime(expiresAt);
+  const remainingSec = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
+  const mm = String(Math.floor(remainingSec / 60)).padStart(2, '0');
+  const ss = String(remainingSec % 60).padStart(2, '0');
+  const keyboard: Keyboard = [];
+  if (order.checkoutUrl) {
+    keyboard.push([{ text: 'pay now', url: order.checkoutUrl }]);
+  }
+  keyboard.push([{ text: 'cancel', data: cb.cancel(order.id) }]);
+  return {
+    text: [
+      `order ${order.orderNo} · ${order.quantity} ${plural(order.quantity, 'link', 'links')}`,
+      total,
+      `⏳ pay before ${timeWat} wat · ${mm}:${ss} left`,
+    ].join('\n'),
+    keyboard,
+  };
+}
+
+export function gateCard(channelUrl: string): OutMessage {
+  return {
+    text: 'join our channel to continue 👇',
+    keyboard: [
+      [{ text: 'join channel', url: channelUrl }],
+      [{ text: 'i have joined ✅', data: cb.gateJoined }],
+    ],
+  };
+}
+
 export function summaryCard({ order, maxQuantity, offerText, facts }: SummaryInput): OutMessage {
   const q = order.quantity;
   const keyboard: Keyboard = [
@@ -127,7 +198,6 @@ export function summaryCard({ order, maxQuantity, offerText, facts }: SummaryInp
       { text: '+', data: q < maxQuantity ? cb.qty(order.id, q + 1) : cb.noop },
     ],
   ];
-  // §2: [continue] tap creates the checkout. Until §2 is wired, fall back to the direct pay URL.
   if (order.checkoutUrl) {
     keyboard.push([{ text: `pay · ${payLabel(order, facts)}`, url: order.checkoutUrl }]);
   } else {
