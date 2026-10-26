@@ -110,7 +110,7 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
         .then((p) => p.priceCents)
         .catch(() => undefined),
     ]);
-    return { text: `<b>📊 stats</b> · ${escapeHtml(watDateTime(new Date()))}\n${blocksHtml(statsBlocks(s, refs, priceCents))}`, html: true };
+    return { text: `<b>stats</b> · ${escapeHtml(watDateTime(new Date()))}\n${blocksHtml(statsBlocks(s, refs, priceCents))}`, html: true };
   }
 
   /** The last 10 paid orders, each a button that opens it. */

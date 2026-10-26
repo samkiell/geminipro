@@ -238,17 +238,17 @@ describe('reconciler', () => {
     await due.reconciler.runOrders();
     const summaries = sent();
     expect(summaries).toHaveLength(1);
-    expect(summaries[0]?.body).toContain('🕔 since 26 oct, 2:00pm wat\n1 order · 1 link · ₦3,500\n\n💰 sales');
-    expect(summaries[0]?.body).toContain('💰 sales\ntoday: 1 order · 1 link · ₦3,500\nall time: 1 order · 1 link · ₦3,500\n\n⏳ right now');
-    expect(summaries[0]?.body).toContain('📦 reseller\nbalance: $');
-    expect(summaries[0]?.body).toContain('🤖 ai today\nmodel calls: 0');
+    expect(summaries[0]?.body).toContain('since 26 oct, 2:00pm wat\n1 order · 1 link · ₦3,500\n\nsales');
+    expect(summaries[0]?.body).toContain('sales\ntoday: 1 order · 1 link · ₦3,500\nall time: 1 order · 1 link · ₦3,500\n\nright now');
+    expect(summaries[0]?.body).toContain('reseller\nbalance: $');
+    expect(summaries[0]?.body).toContain('ai today\nmodel calls: 0');
 
     // The next one falls due at 00:01 WAT: held through quiet hours, sent at 07:00.
     await setup({ now: () => new Date('2026-10-26T23:30:00Z') }).reconciler.runOrders(); // 00:30 WAT
     expect(sent()).toHaveLength(1);
     await setup({ now: () => new Date('2026-10-27T06:05:00Z') }).reconciler.runOrders(); // 07:05 WAT
     expect(sent()).toHaveLength(2);
-    expect(sent()[1]?.body).toContain('🕔 since 26 oct, 7:01pm wat');
+    expect(sent()[1]?.body).toContain('since 26 oct, 7:01pm wat');
   });
 
   it('one failing job does not stop the others', async () => {

@@ -162,10 +162,10 @@ export function createReconciler(deps: ReconcilerDeps) {
     } catch {
       // keep the placeholder
     }
-    const blocks = [{ title: `🕔 since ${watDateTime(lastAt)}`, lines: [totalsLine(recent)] }, ...statsBlocks(s, refs, linkPriceCents)];
-    blocks.splice(3, 0, { title: '📦 reseller', lines: reseller });
+    const blocks = [{ title: `since ${watDateTime(lastAt)}`, lines: [totalsLine(recent)] }, ...statsBlocks(s, refs, linkPriceCents)];
+    blocks.splice(3, 0, { title: 'reseller', lines: reseller });
     blocks.push({
-      title: '🤖 ai today',
+      title: 'ai today',
       lines: [`model calls: ${ai.calls} (${ai.rateLimited} rate limited)`, `answered free: ${ai.free}`, `scripted fallbacks: ${ai.fallbacks}`],
     });
     deps.notify({ level: 'info', title: 'sales summary', body: blocksText(blocks) });

@@ -80,11 +80,11 @@ export function statsBlocks(s: SalesStats, r: ReferralStats, linkPriceCents?: nu
   const rate = a.delivered > 0 ? ` (${Math.round((a.activated / a.delivered) * 100)}%)` : '';
   const cost = linkPriceCents !== undefined ? ` ($${((r.rewardLinks * linkPriceCents) / 100).toFixed(2)})` : '';
   return [
-    { title: '💰 sales', lines: [`today: ${totalsLine(s.today)}`, `all time: ${totalsLine(s.total)}`] },
-    { title: '⏳ right now', lines: [`in progress: ${s.inProgress}`, `waiting for payment: ${s.pending}`, `failures: ${s.failures}`] },
-    { title: '✅ activations', lines: [`${a.activated} of ${a.delivered} delivered links${rate}`, `today: ${a.activatedToday}`] },
+    { title: 'sales', lines: [`today: ${totalsLine(s.today)}`, `all time: ${totalsLine(s.total)}`] },
+    { title: 'right now', lines: [`in progress: ${s.inProgress}`, `waiting for payment: ${s.pending}`, `failures: ${s.failures}`] },
+    { title: 'activations', lines: [`${a.activated} of ${a.delivered} delivered links${rate}`, `today: ${a.activatedToday}`] },
     {
-      title: '🎁 referrals',
+      title: 'referrals',
       lines: [`friends who bought: ${r.qualified}`, `free links granted: ${r.rewardsGranted}`, `cost: ${howMany(r.rewardLinks, 'link', 'links')}${cost}`],
     },
   ];
