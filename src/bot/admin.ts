@@ -9,10 +9,10 @@ import type { ResellerClient } from '../services/reseller.js';
 import { activeProof, addProof, MAX_PROOF, removeProof, type Proof } from '../services/proof.js';
 import { getOfferText, isPaused, setOfferText, setPaused } from '../services/settings.js';
 import { referralStats } from '../services/referrals.js';
-import { activationLine, referralLine, salesStats } from '../services/stats.js';
+import { blocksHtml, salesStats, statsBlocks } from '../services/stats.js';
 import type { Logger } from '../util/logger.js';
 import type { Flows } from './flows.js';
-import type { Keyboard, OutMessage, TelegramPort } from './telegram.js';
+import { escapeHtml, type Keyboard, type OutMessage, type TelegramPort } from './telegram.js';
 import { linksMessages, naira, watDateTime, type UiFacts } from './views.js';
 
 // Admin commands (docs/PRD.md 8.8), only for ADMIN_TELEGRAM_IDS. For anyone else these commands
@@ -101,7 +101,7 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
     }
   }
 
-  async function statsView(): Promise<string> {
+  async function statsView(): Promise<OutMessage> {
     const [s, refs, priceCents] = await Promise.all([
       salesStats(db),
       referralStats(db),
@@ -110,13 +110,7 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
         .then((p) => p.priceCents)
         .catch(() => undefined),
     ]);
-    return [
-      `today: ${s.today.orders} orders, ${s.today.links} links, ${naira(s.today.revenueNgn)}`,
-      `total: ${s.total.orders} orders, ${s.total.links} links, ${naira(s.total.revenueNgn)}`,
-      `in progress: ${s.inProgress} · failures: ${s.failures} · waiting for payment: ${s.pending}`,
-      activationLine(s.activation),
-      referralLine(refs, priceCents),
-    ].join('\n');
+    return { text: `<b>📊 stats</b> · ${escapeHtml(watDateTime(new Date()))}\n${blocksHtml(statsBlocks(s, refs, priceCents))}`, html: true };
   }
 
   /** The last 10 paid orders, each a button that opens it. */
@@ -367,7 +361,7 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
     await reply(ctx, { text: await balanceView() });
   });
   admin.command('stats', async (ctx) => {
-    await reply(ctx, { text: await statsView() });
+    await reply(ctx, await statsView());
   });
   admin.command('allorders', async (ctx) => {
     await reply(ctx, await ordersView());
@@ -473,7 +467,7 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
     if (kind === 'p') {
       if (arg === 'home') return show({ text: PANEL_TEXT, keyboard: PANEL });
       if (arg === 'balance') return show({ text: await balanceView(), keyboard: BACK });
-      if (arg === 'stats') return show({ text: await statsView(), keyboard: BACK });
+      if (arg === 'stats') return show({ ...(await statsView()), keyboard: BACK });
       if (arg === 'orders') return show(await ordersView());
       if (arg === 'leads') return show({ text: await leadsView(), keyboard: BACK });
       if (arg === 'offer') return show(await offerView());

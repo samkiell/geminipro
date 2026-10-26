@@ -1,7 +1,6 @@
 import { and, eq, inArray, isNotNull, lt, or, sql } from 'drizzle-orm';
 import type { Flows } from '../bot/flows.js';
 import { readUsage } from '../agent/usage.js';
-import { naira } from '../bot/views.js';
 import type { Db } from '../db/client.js';
 import { events, orders } from '../db/schema.js';
 import type { Logger } from '../util/logger.js';
@@ -11,7 +10,7 @@ import { paymentProblem, type PaymentProvider } from './payments.js';
 import type { ResellerClient } from './reseller.js';
 import { getSetting, setSetting } from './settings.js';
 import { referralStats } from './referrals.js';
-import { activationLine, referralLine, salesStats, watDateKey } from './stats.js';
+import { blocksText, salesStats, statsBlocks, watDateKey } from './stats.js';
 
 // docs/ARCHITECTURE.md 7.4. Catches whatever the event driven paths missed: a sleeping service,
 // a lost webhook, a crash in the middle of fulfilment. Runs once at boot, then on timers.
@@ -141,29 +140,23 @@ export function createReconciler(deps: ReconcilerDeps) {
     await setSetting(db, 'last_daily_summary', today);
 
     const [s, ai, refs] = await Promise.all([salesStats(db, t), readUsage(db, t), referralStats(db)]);
-    let stock = 'reseller unreachable';
+    let reseller = ['unreachable'];
     let linkPriceCents: number | undefined;
     try {
       const [balance, product] = await Promise.all([deps.reseller.getBalance(), deps.reseller.getProduct(deps.productId)]);
       const covers = product.priceCents > 0 ? Math.floor(balance.balanceCents / product.priceCents) : 0;
       linkPriceCents = product.priceCents;
-      stock = `balance $${(balance.balanceCents / 100).toFixed(2)}, covers ${covers} links, stock ${product.stock}`;
+      reseller = [`balance: $${(balance.balanceCents / 100).toFixed(2)}`, `covers: ${covers} links`, `stock: ${product.stock}`];
     } catch {
       // keep the placeholder
     }
-    deps.notify({
-      level: 'info',
-      title: 'daily summary',
-      body: [
-        `today: ${s.today.orders} orders, ${s.today.links} links sold, ${naira(s.today.revenueNgn)}`,
-        `failures: ${s.failures} · in progress: ${s.inProgress} · waiting for payment: ${s.pending}`,
-        `reseller: ${stock}`,
-        `total so far: ${s.total.orders} orders, ${s.total.links} links, ${naira(s.total.revenueNgn)}`,
-        activationLine(s.activation),
-        referralLine(refs, linkPriceCents),
-        `ai today: ${ai.calls} model calls (${ai.rateLimited} rate limited), ${ai.free} answered free, ${ai.fallbacks} scripted fallbacks`,
-      ].join('\n'),
+    const blocks = statsBlocks(s, refs, linkPriceCents);
+    blocks.splice(2, 0, { title: '📦 reseller', lines: reseller });
+    blocks.push({
+      title: '🤖 ai today',
+      lines: [`model calls: ${ai.calls} (${ai.rateLimited} rate limited)`, `answered free: ${ai.free}`, `scripted fallbacks: ${ai.fallbacks}`],
     });
+    deps.notify({ level: 'info', title: 'daily summary', body: blocksText(blocks) });
   }
 
   /** True when this process must not touch orders. A failed check never stops the live shop. */

@@ -238,8 +238,9 @@ describe('reconciler', () => {
     await after.reconciler.runOrders();
     const summaries = alerts.filter((a) => a.title === 'daily summary');
     expect(summaries).toHaveLength(1);
-    expect(summaries[0]?.body).toContain('today: 1 orders, 1 links sold, ₦3,500');
-    expect(summaries[0]?.body).toContain('reseller: balance $');
+    expect(summaries[0]?.body).toContain('💰 sales\ntoday: 1 order · 1 link · ₦3,500\nall time: 1 order · 1 link · ₦3,500\n\n⏳ right now');
+    expect(summaries[0]?.body).toContain('📦 reseller\nbalance: $');
+    expect(summaries[0]?.body).toContain('🤖 ai today\nmodel calls: 0');
     expect(await getSetting(testDb.db, 'last_daily_summary')).toBe('2026-10-26');
   });
 

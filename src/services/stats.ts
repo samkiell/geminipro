@@ -1,5 +1,7 @@
 import { and, count, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
+import { escapeHtml } from '../bot/telegram.js';
+import { naira } from '../bot/views.js';
 import { orderItems, orders } from '../db/schema.js';
 import type { ReferralStats } from './referrals.js';
 
@@ -63,16 +65,39 @@ async function activation(db: Db, now: Date): Promise<SalesStats['activation']> 
   return { delivered: row?.delivered ?? 0, activated: row?.activated ?? 0, activatedToday: row?.activatedToday ?? 0 };
 }
 
-/** "activated: 3 of 5 delivered links (60%), 1 today". */
-export function activationLine(a: SalesStats['activation']): string {
-  const rate = a.delivered > 0 ? ` (${Math.round((a.activated / a.delivered) * 100)}%)` : '';
-  return `activated: ${a.activated} of ${a.delivered} delivered links${rate}, ${a.activatedToday} today`;
+/** A titled section of /stats and the daily summary. */
+export interface StatsBlock {
+  title: string;
+  lines: string[];
 }
 
-/** "referrals: 4 friends bought, 1 free link granted, cost 1 link ($1.20)". */
-export function referralLine(r: ReferralStats, linkPriceCents?: number): string {
+const howMany = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const totalsLine = (t: Totals) => `${howMany(t.orders, 'order', 'orders')} · ${howMany(t.links, 'link', 'links')} · ${naira(t.revenueNgn)}`;
+
+/** Sales, orders open right now, activations and referrals: one block each. */
+export function statsBlocks(s: SalesStats, r: ReferralStats, linkPriceCents?: number): StatsBlock[] {
+  const a = s.activation;
+  const rate = a.delivered > 0 ? ` (${Math.round((a.activated / a.delivered) * 100)}%)` : '';
   const cost = linkPriceCents !== undefined ? ` ($${((r.rewardLinks * linkPriceCents) / 100).toFixed(2)})` : '';
-  return `referrals: ${r.qualified} friends bought, ${r.rewardsGranted} free ${r.rewardsGranted === 1 ? 'link' : 'links'} granted, cost ${r.rewardLinks} ${r.rewardLinks === 1 ? 'link' : 'links'}${cost}`;
+  return [
+    { title: '💰 sales', lines: [`today: ${totalsLine(s.today)}`, `all time: ${totalsLine(s.total)}`] },
+    { title: '⏳ right now', lines: [`in progress: ${s.inProgress}`, `waiting for payment: ${s.pending}`, `failures: ${s.failures}`] },
+    { title: '✅ activations', lines: [`${a.activated} of ${a.delivered} delivered links${rate}`, `today: ${a.activatedToday}`] },
+    {
+      title: '🎁 referrals',
+      lines: [`friends who bought: ${r.qualified}`, `free links granted: ${r.rewardsGranted}`, `cost: ${howMany(r.rewardLinks, 'link', 'links')}${cost}`],
+    },
+  ];
+}
+
+/** Telegram HTML: each block is a bold title over a quote, so the sections stand apart. */
+export function blocksHtml(blocks: StatsBlock[]): string {
+  return blocks.map((b) => `<b>${escapeHtml(b.title)}</b>\n<blockquote>${b.lines.map(escapeHtml).join('\n')}</blockquote>`).join('\n');
+}
+
+/** Plain text for alerts, which also go to email and ntfy: title, lines, a blank line between. */
+export function blocksText(blocks: StatsBlock[]): string {
+  return blocks.map((b) => [b.title, ...b.lines].join('\n')).join('\n\n');
 }
 
 export async function salesStats(db: Db, now = new Date()): Promise<SalesStats> {

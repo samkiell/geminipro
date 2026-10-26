@@ -160,7 +160,9 @@ describe('admin commands', () => {
     await testDb.db.update(users).set({ username: 'tunde' }).where(eq(users.telegramId, BUYER));
     const bot = makeBot();
     await bot.handleUpdate(command('/stats', ADMIN));
-    expect(lastTextTo(ADMIN)).toMatch(/^today: 1 orders, 1 links, ₦3,500\ntotal: 1 orders, 1 links, ₦3,500/);
+    expect(lastTextTo(ADMIN)).toContain('<b>💰 sales</b>\n<blockquote>today: 1 order · 1 link · ₦3,500\nall time: 1 order · 1 link · ₦3,500</blockquote>');
+    expect(lastTextTo(ADMIN)).toContain('<b>⏳ right now</b>\n<blockquote>in progress: 0\nwaiting for payment: 0\nfailures: 0</blockquote>');
+    expect(tg.sent.at(-1)?.html).toBe(true);
     await bot.handleUpdate(command('/allorders', ADMIN));
     expect(lastTextTo(ADMIN)).toContain(`${order.orderNo} · 1 · ₦3,500 · delivered · @tunde`);
     await bot.handleUpdate(command(`/order ${order.orderNo.toLowerCase()}`, ADMIN));
@@ -205,7 +207,7 @@ describe('admin commands', () => {
     expect(lastTextTo(ADMIN)).toBe(`every link of ${order.orderNo} is activated and closed. nothing to resend.`);
     expect(tg.textsTo(BUYER)).toEqual([]);
     await bot.handleUpdate(command('/stats', ADMIN));
-    expect(lastTextTo(ADMIN)).toContain('activated: 1 of 1 delivered links (100%), 1 today');
+    expect(lastTextTo(ADMIN)).toContain('<b>✅ activations</b>\n<blockquote>1 of 1 delivered links (100%)\ntoday: 1</blockquote>');
     await bot.handleUpdate(command(`/order ${order.orderNo}`, ADMIN));
     expect(lastTextTo(ADMIN)).toMatch(/link 1: completed, delivered, activated \d+ \w+, \d{1,2}:\d\d[ap]m wat/);
   });
