@@ -73,7 +73,7 @@ const envSchema = z.object({
 
   DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'expected a postgres:// connection string'),
 
-  UNIT_PRICE_NGN: int().positive().default(3500),
+  UNIT_PRICE_NGN: int().positive().default(5000),
   MAX_QTY_PER_ORDER: int().positive().default(10),
   LOW_BALANCE_ORDERS: int().min(0).default(5),
   // International format without +, for wa.me links. Buyers see the local form (08087357158).
