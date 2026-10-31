@@ -54,7 +54,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: UNIT_PRICE_NGN
-        value: "3500"
+        value: "5000"
       - key: MAX_QTY_PER_ORDER
         value: "10"
       - key: LOW_BALANCE_ORDERS
