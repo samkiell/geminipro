@@ -31,6 +31,8 @@ export function logNotifier(logger: Logger): Notify {
 }
 
 export interface NotifierDeps {
+  /** When false, suppress ALL owner channels (email, Telegram, ntfy), including crash alerts. */
+  enabled?: boolean;
   logger: Logger;
   db?: Db;
   port: TelegramPort;
@@ -136,6 +138,7 @@ export function createNotifier(deps: NotifierDeps): Notify & { settled: () => Pr
   }
 
   const notify = (alert: Alert) => {
+    if (deps.enabled === false) return;
     const job = deliver(alert).catch((err: unknown) => deps.logger.error({ err }, 'notifier failed'));
     pending.add(job);
     void job.finally(() => pending.delete(job));
