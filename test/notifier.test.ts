@@ -29,7 +29,7 @@ const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
   return new Response('{}', { status: 200 });
 }) as typeof fetch;
 
-function notifier(overrides: { now?: () => number; resendApiKey?: string | undefined } = {}) {
+function notifier(overrides: { now?: () => number; resendApiKey?: string | undefined; enabled?: boolean } = {}) {
   return createNotifier({
     logger,
     db: testDb.db,
@@ -45,6 +45,15 @@ function notifier(overrides: { now?: () => number; resendApiKey?: string | undef
 }
 
 describe('notifier', () => {
+  it('does not send email, Telegram or ntfy when owner notifications are disabled', async () => {
+    const notify = notifier({ enabled: false });
+    notify({ level: 'critical', title: 'crash', body: 'Production failed' });
+    notify({ level: 'info', title: 'sales summary', body: 'No new sales' });
+    await notify.settled();
+    expect(requests).toHaveLength(0);
+    expect(tg.sent).toHaveLength(0);
+  });
+
   it('sends to email, every admin chat and ntfy at once', async () => {
     const notify = notifier();
     notify({ level: 'critical', title: 'paid order not fulfilled', body: 'Order GP-1042 failed.' });
