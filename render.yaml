@@ -53,6 +53,11 @@ services:
         value: "6"
       - key: DATABASE_URL
         sync: false
+      # Sales and unsolicited messaging are suspended. Paid-order recovery stays running.
+      - key: SHOP_PAUSED
+        value: "true"
+      - key: OWNER_NOTIFICATIONS_ENABLED
+        value: "false"
       - key: UNIT_PRICE_NGN
         value: "5000"
       - key: MAX_QTY_PER_ORDER
