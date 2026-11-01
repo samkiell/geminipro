@@ -29,7 +29,7 @@ import { createReconciler } from './services/reconciler.js';
 import { createReferrals, type ReferralConfig } from './services/referrals.js';
 import { sendActivationReminders } from './services/reminders.js';
 import { createResellerClient } from './services/reseller.js';
-import { getSetting, isPaused, setSetting } from './services/settings.js';
+import { getSetting, isPaused, setOperatorPause, setSetting } from './services/settings.js';
 import { createLogger, type Logger } from './util/logger.js';
 import { withTimeout } from './util/time.js';
 
@@ -51,6 +51,7 @@ function readConfig(): Config {
 
 async function main(): Promise<void> {
   const config = readConfig();
+  setOperatorPause(config.SHOP_PAUSED);
   // In production every error and crash also goes to the owner's Telegram, email and ntfy.
   const errorAlerts = createErrorAlerts();
   const logger = createLogger({
@@ -106,6 +107,7 @@ async function main(): Promise<void> {
   const port = grammyPort(bot.api);
 
   const notify = createNotifier({
+    enabled: config.OWNER_NOTIFICATIONS_ENABLED,
     logger,
     db,
     port,
@@ -273,6 +275,7 @@ async function main(): Promise<void> {
     sendReminders: () => sendActivationReminders({ db, port, logger, delayMinutes: config.REMINDER_DELAY_MINUTES }),
     grantRewards: () => referrals.grantPending(),
     summaryEveryHours: config.SUMMARY_EVERY_HOURS,
+    suspendAutomations: config.SHOP_PAUSED,
     active: reconcilerActive,
   });
 
