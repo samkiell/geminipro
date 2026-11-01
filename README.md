@@ -7,6 +7,14 @@ Telegram agent ([@geminiprosamkiel_bot](https://t.me/geminiprosamkiel_bot)) that
 
 Stack: Node.js 22, TypeScript, Fastify, grammY, Drizzle + Neon Postgres, zod, pino, vitest.
 
+## Shop suspended (November 2026)
+
+Sales and owner alerts are disabled by default. `SHOP_PAUSED=true` blocks new checkouts and referral rewards, and suspends scheduled payment nudges, activation reminders, stock alerts and sales summaries. `OWNER_NOTIFICATIONS_ENABLED=false` stops outgoing **owner** email, Telegram and ntfy alerts, including service-start and crash alerts. Incoming Telegram messages can still receive replies, and existing order history stays accessible.
+
+**Paid orders are not abandoned:** Bachs webhooks, late-payment verification and paid-order recovery/delivery continue to run. No database records or reseller credentials are removed.
+
+To resume later, set `SHOP_PAUSED=false` in the Render environment and redeploy, then use the admin `/resume` command if the database pause is also set. Enable owner notifications separately with `OWNER_NOTIFICATIONS_ENABLED=true` and redeploy. Do not rely on `/resume` alone while `SHOP_PAUSED=true`. For a manually configured Render service, the code defaults still apply even if `render.yaml` is not synced. External service messages (Render/Bachs account emails or UptimeRobot alerts) are controlled in those services, not here.
+
 ## Setup
 
 1. Install Node.js 22 or newer and pnpm (`corepack enable`), then install dependencies:
