@@ -7,7 +7,7 @@ import type { Notify } from '../services/notifier.js';
 import { findOrderByNo, recordLinkMessage, reservedUnits } from '../services/orders.js';
 import type { ResellerClient } from '../services/reseller.js';
 import { activeProof, addProof, MAX_PROOF, removeProof, type Proof } from '../services/proof.js';
-import { getOfferText, isPaused, setOfferText, setPaused } from '../services/settings.js';
+import { getOfferText, isOperatorPaused, isPaused, setOfferText, setPaused } from '../services/settings.js';
 import { referralStats } from '../services/referrals.js';
 import { blocksHtml, salesStats, statsBlocks } from '../services/stats.js';
 import type { Logger } from '../util/logger.js';
@@ -386,6 +386,10 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
     await reply(ctx, { text: 'sales paused. buyers are told to check back shortly. /resume to restart.' });
   });
   admin.command('resume', async (ctx) => {
+    if (isOperatorPaused()) {
+      await reply(ctx, { text: 'shop is paused at deployment level. set SHOP_PAUSED=false on Render and redeploy before using /resume.' });
+      return;
+    }
     await setPaused(db, false);
     await reply(ctx, { text: 'sales are on again.' });
   });
@@ -477,6 +481,9 @@ export function registerAdmin(bot: Bot, deps: AdminDeps): void {
         return show(await proofsView());
       }
       if (arg === 'pause' || arg === 'resume') {
+        if (arg === 'resume' && isOperatorPaused()) {
+          return show({ text: 'shop is paused at deployment level. set SHOP_PAUSED=false on Render and redeploy before resuming.', keyboard: BACK });
+        }
         await setPaused(db, arg === 'pause');
         return show({ text: arg === 'pause' ? 'sales paused.' : 'sales are on again.', keyboard: BACK });
       }
