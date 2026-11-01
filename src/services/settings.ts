@@ -3,6 +3,16 @@ import type { Db } from '../db/client.js';
 import { settings } from '../db/schema.js';
 
 const PAUSED = 'paused';
+
+// An operator-level stop overrides /resume and survives database changes.
+// Set by the production entry point from SHOP_PAUSED.
+let operatorPaused = false;
+export function setOperatorPause(paused: boolean): void {
+  operatorPaused = paused;
+}
+export function isOperatorPaused(): boolean {
+  return operatorPaused;
+}
 const OFFER_TEXT = 'offer_text';
 
 /** Never a date: the offer end is announced with words the owner can change (/offertext). */
@@ -14,6 +24,7 @@ const offerCache = new WeakMap<Db, { value: string; at: number }>();
 
 /** Sales are paused by the owner (/pause) or automatically when the reseller rejects our API key. */
 export async function isPaused(db: Db): Promise<boolean> {
+  if (operatorPaused) return true;
   const [row] = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, PAUSED));
   return row?.value === true;
 }
