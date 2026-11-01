@@ -31,6 +31,9 @@ export interface ReconcilerDeps {
   sendReminders: () => Promise<number>;
   /** Referral rewards held back earlier (paused, no stock). */
   grantRewards?: () => Promise<number>;
+  /** Suspend periodic nudges, reminders, referral grants, sales summaries and stock alerts.
+   * Never disable payment verification or paid-order recovery. */
+  suspendAutomations?: boolean;
   /** Hours between owner summaries. Default 5. */
   summaryEveryHours?: number;
   /** Checked before every run; false skips it (a local run on the live shop's database stands down). */
@@ -188,12 +191,14 @@ export function createReconciler(deps: ReconcilerDeps) {
       if (await standDown()) return;
       await step('expire', expire);
       await step('clean old drafts', async () => deleteOldOrderDrafts(db, new Date(now().getTime() - 24 * 60 * 60_000)));
-      await step('nudges', deps.sendNudges);
+      if (!deps.suspendAutomations) await step('nudges', deps.sendNudges);
       await step('verify stale checkouts', verifyStale);
       await step('recover fulfilment', recover);
-      if (deps.grantRewards) await step('referral rewards', deps.grantRewards);
-      await step('activation reminders', deps.sendReminders);
-      await step('sales summary', summary);
+      if (!deps.suspendAutomations) {
+        if (deps.grantRewards) await step('referral rewards', deps.grantRewards);
+        await step('activation reminders', deps.sendReminders);
+        await step('sales summary', summary);
+      }
     } finally {
       running.orders = false;
     }
@@ -201,7 +206,7 @@ export function createReconciler(deps: ReconcilerDeps) {
 
   /** Low balance or stock: fewer links left to sell than LOW_BALANCE_ORDERS. */
   async function runBalance(): Promise<void> {
-    if (running.balance) return;
+    if (deps.suspendAutomations || running.balance) return;
     running.balance = true;
     try {
       if (await standDown()) return;
