@@ -73,6 +73,8 @@ const envSchema = z.object({
 
   DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'expected a postgres:// connection string'),
 
+  // Reversible production hold. Enabled by default until explicitly turned off.
+  SHOP_PAUSED: bool(true),
   UNIT_PRICE_NGN: int().positive().default(5000),
   MAX_QTY_PER_ORDER: int().positive().default(10),
   LOW_BALANCE_ORDERS: int().min(0).default(5),
@@ -84,6 +86,8 @@ const envSchema = z.object({
   // Minutes after delivery before the one "did you activate your link?" reminder.
   REMINDER_DELAY_MINUTES: int().min(1).default(180),
 
+  // Silences every owner alert channel, not only the regular sales summary.
+  OWNER_NOTIFICATIONS_ENABLED: bool(false),
   ALERT_EMAIL: z.email().default('ezekiel.samuel@samkiel.tech'),
   // Resend sender: an address on a domain verified in Resend (samkiel.dev is).
   ALERT_EMAIL_FROM: z.string().default('geminipro alerts <hello@samkiel.dev>'),
